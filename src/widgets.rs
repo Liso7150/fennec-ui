@@ -1,0 +1,255 @@
+//! Shared message widgets for the dense workflow layout both Fennec shells
+//! render: right-aligned user bubbles, small "Fennec <time> [🔊]" AI headers,
+//! bordered action/attachment/edit cards, and the tight scrollable queue strip.
+//!
+//! Click handlers are app-generic: they receive `(&mut Window, &mut App)` so
+//! each app can capture a `WeakEntity` of its own state and update it.
+
+use gpui_kit::component::{
+    button::{Button, ButtonVariants},
+    label::Label,
+    notification::Notification,
+    scroll::ScrollableElement,
+    Sizable, Theme, WindowExt,
+};
+use gpui_kit::prelude::*;
+use gpui_kit::*;
+
+use crate::markdown::rich_div;
+
+/// First line of `s`, trimmed and bounded to `n` chars with an ellipsis.
+pub fn truncate(s: &str, n: usize) -> String {
+    let one = s.lines().next().unwrap_or(s).trim();
+    if one.chars().count() > n {
+        format!("{}…", one.chars().take(n).collect::<String>())
+    } else {
+        one.to_string()
+    }
+}
+
+pub fn avatar(letter: &str, bg: Hsla) -> impl IntoElement {
+    div().w(px(28.0)).h(px(28.0)).rounded_full().bg(bg).flex().items_center().justify_center().flex_shrink_0()
+        .child(Label::new(letter).text_size(px(12.0)).text_color(Hsla::white()))
+}
+
+/// Speak `text` aloud off the UI thread. On Windows the PowerShell SAPI host
+/// runs with CREATE_NO_WINDOW so no console flashes next to the app; macOS
+/// uses `say`, Linux `espeak`.
+pub fn speak_tts(text: &str, window: &mut Window, cx: &mut App) {
+    if text.is_empty() {
+        return;
+    }
+    let text = text.to_string();
+    std::thread::spawn(move || {
+        #[cfg(target_os = "windows")]
+        {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            let script = format!(
+                "Add-Type -AssemblyName System.Speech; (New-Object System.Speech.Synthesis.SpeechSynthesizer).Speak('{}')",
+                text.replace("'", "''")
+            );
+            let _ = std::process::Command::new("powershell")
+                .args(["-Command", &script])
+                .creation_flags(CREATE_NO_WINDOW)
+                .output();
+        }
+        #[cfg(target_os = "macos")]
+        let _ = std::process::Command::new("say").arg(&text).output();
+        #[cfg(target_os = "linux")]
+        let _ = std::process::Command::new("espeak").arg(&text).output();
+        let _ = &text;
+    });
+    window.push_notification(Notification::info("Speaking…"), cx);
+}
+
+/// The user's own words sit on the right in a rounded bubble: no avatar, no
+/// header, just the message. `msg_idx` must be unique per message on screen.
+pub fn user_bubble(t: &Theme, text: &str, msg_idx: usize) -> Stateful<Div> {
+    div().id(ElementId::NamedInteger("user-msg".into(), msg_idx as u64))
+        .flex().justify_end()
+        .child(div().max_w(px(560.0)).rounded_lg().bg(t.muted).px_3().py_2()
+            .child(rich_div(t, text, false, msg_idx)))
+}
+
+/// Small "Fennec <time> [🔊]" header above an AI turn. The speak button is
+/// only rendered when a handler is given; `msg_id` keeps its element id
+/// unique across messages.
+pub fn ai_header<F>(t: &Theme, msg_id: u64, time: &str, on_speak: Option<F>) -> Div
+where
+    F: Fn(&mut Window, &mut App) + 'static,
+{
+    let mut row = div().flex().items_center().gap_2()
+        .child(Label::new("Fennec").font_weight(FontWeight::SEMIBOLD).text_size(px(11.5)))
+        .children((!time.is_empty()).then(|| {
+            Label::new(time.to_string()).font_family("monospace").text_size(px(10.5)).text_color(t.muted_foreground)
+        }));
+    if let Some(on_speak) = on_speak {
+        row = row.child(
+            Button::new(ElementId::NamedInteger("tts".into(), msg_id)).ghost().xsmall().px_1()
+                .child(Label::new("🔊").text_size(px(12.0)).text_color(t.muted_foreground))
+                .on_click(move |_, window, cx| on_speak(window, cx)),
+        );
+    }
+    row
+}
+
+/// The task-queue strip: a "Task queue · N items" header with a "View all"
+/// affordance above tight, dark, scrollable rows — status dot + title left,
+/// "Next"/"Queued" right. Rows stay compact (py_1, gap_0) but the list keeps
+/// its scrollbar when many prompts wait.
+pub fn queue_strip<F>(t: &Theme, items: &[String], on_view_all: F) -> Div
+where
+    F: Fn(&mut Window, &mut App) + 'static,
+{
+    let len = items.len();
+    let header = div().flex().items_center().justify_between().px_4().py_1()
+        .child(div().flex().items_center().gap_2()
+            .child(Label::new("☰").text_size(px(13.0)).text_color(t.muted_foreground))
+            .child(Label::new(format!("Task queue · {len} item{}", if len == 1 { "" } else { "s" }))
+                .font_weight(FontWeight::SEMIBOLD).text_size(px(12.0))))
+        .child(Button::new("queue-view-all").label("View all").ghost().xsmall()
+            .on_click(move |_, window, cx| on_view_all(window, cx)));
+
+    let mut rows = div().flex().flex_col().gap_0().max_h(px(120.0)).overflow_y_scrollbar();
+    for (i, text) in items.iter().enumerate() {
+        let is_next = i == 0;
+        rows = rows.child(
+            div().id(ElementId::NamedInteger("queue-item".into(), i as u64))
+                .flex().items_center().justify_between().px_4().py_1().bg(t.muted)
+                .child(div().flex().items_center().gap_2().overflow_hidden()
+                    .child(div().w(px(6.0)).h(px(6.0)).flex_shrink_0().rounded_full()
+                        .bg(if is_next { t.success } else { t.muted_foreground }))
+                    .child(Label::new(truncate(text, 80)).text_size(px(12.0)).truncate()))
+                .child(Label::new(if is_next { "Next" } else { "Queued" })
+                    .font_weight(FontWeight::SEMIBOLD).text_size(px(10.5))
+                    .text_color(if is_next { t.success } else { t.muted_foreground })),
+        );
+    }
+
+    div().border_t_1().border_color(t.border).bg(t.background).flex().flex_col()
+        .child(header)
+        .child(rows)
+}
+
+/// A bordered action row: "🔍 <title>" left, "Complete · 0.8s"/"Running…"
+/// right, monospace detail behind the toggle. Collapsed by default; the whole
+/// header expands it on click.
+#[allow(clippy::too_many_arguments)]
+pub fn action_card<F>(
+    t: &Theme,
+    id: u64,
+    icon: &str,
+    title: &str,
+    detail: &str,
+    status_text: &str,
+    status_color: Hsla,
+    open: bool,
+    on_toggle: F,
+) -> Stateful<Div>
+where
+    F: Fn(&mut Window, &mut App) + 'static,
+{
+    let header = div().id(ElementId::NamedInteger("action-h".into(), id))
+        .flex().items_center().justify_between().px_3().py_1().cursor_pointer()
+        .on_click(move |_, window, cx| on_toggle(window, cx))
+        .child(div().flex().items_center().gap_2().overflow_hidden()
+            .child(Label::new(if open { "▾" } else { "▸" }).text_size(px(10.0)).text_color(t.muted_foreground))
+            .child(Label::new(icon.to_string()).text_size(px(13.0)).text_color(t.primary))
+            .child(Label::new(title.to_string()).text_size(px(12.5)).font_weight(FontWeight::MEDIUM).truncate()))
+        .child(Label::new(status_text.to_string()).text_size(px(11.0)).text_color(status_color));
+
+    let mut card = div().id(ElementId::NamedInteger("action".into(), id))
+        .rounded_md().border_1().border_color(t.border).bg(t.muted)
+        .flex().flex_col()
+        .child(header);
+    if open && !detail.is_empty() {
+        card = card.child(div().border_t_1().border_color(t.border).px_3().py_2()
+            .font_family("monospace").max_h(px(160.0)).overflow_y_scrollbar()
+            .child(Label::new(detail.to_string()).text_size(px(11.0)).text_color(t.muted_foreground)));
+    }
+    card
+}
+
+/// An attachment row: "📄 <name>" + "<dir> · Markdown attachment" + a trailing
+/// note ("…" or a size). When `on_open` is given the whole card is clickable.
+pub fn attachment_card<F>(
+    t: &Theme,
+    id: u64,
+    name: &str,
+    subtitle: &str,
+    trailing: &str,
+    on_open: Option<F>,
+) -> Stateful<Div>
+where
+    F: Fn(&mut Window, &mut App) + 'static,
+{
+    let mut card = div().id(ElementId::NamedInteger("attach".into(), id))
+        .rounded_md().border_1().border_color(t.border).bg(t.muted).px_3().py_2()
+        .flex().items_center().justify_between()
+        .child(div().flex().items_center().gap_2().overflow_hidden()
+            .child(div().w(px(26.0)).h(px(26.0)).rounded_md().bg(t.primary)
+                .flex().items_center().justify_center().flex_shrink_0()
+                .child(Label::new("📄").text_size(px(12.0)).text_color(t.background)))
+            .child(div().flex().flex_col().overflow_hidden()
+                .child(Label::new(name.to_string()).font_weight(FontWeight::SEMIBOLD).text_size(px(12.5)).truncate())
+                .child(Label::new(subtitle.to_string()).text_size(px(10.5)).text_color(t.muted_foreground).truncate())))
+        .child(Label::new(trailing.to_string()).text_size(px(12.0)).text_color(t.muted_foreground));
+    if let Some(on_open) = on_open {
+        card = card.cursor_pointer().on_click(move |_, window, cx| on_open(window, cx));
+    }
+    card
+}
+
+/// An edit card: "Edited 1 file" + "+42 −6" + [Review] on the header row, a
+/// monospace path row with the same counts underneath, and the diff/output
+/// behind the toggle.
+#[allow(clippy::too_many_arguments)]
+pub fn edit_card<F, G>(
+    t: &Theme,
+    id: u64,
+    title: &str,
+    adds: usize,
+    dels: usize,
+    path: &str,
+    detail: &str,
+    open: bool,
+    on_toggle: F,
+    on_review: G,
+) -> Stateful<Div>
+where
+    F: Fn(&mut Window, &mut App) + 'static,
+    G: Fn(&mut Window, &mut App) + 'static,
+{
+    let header = div().id(ElementId::NamedInteger("edit-h".into(), id))
+        .flex().items_center().justify_between().px_3().py_1().cursor_pointer()
+        .on_click(move |_, window, cx| on_toggle(window, cx))
+        .child(div().flex().items_center().gap_2().overflow_hidden()
+            .child(Label::new(if open { "▾" } else { "▸" }).text_size(px(10.0)).text_color(t.muted_foreground))
+            .child(Label::new("✎").text_size(px(13.0)).text_color(t.primary))
+            .child(Label::new(title.to_string()).text_size(px(12.5)).font_weight(FontWeight::MEDIUM))
+            .child(div().flex().items_center().gap_1().flex_shrink_0()
+                .child(Label::new(format!("+{adds}")).font_family("monospace").text_size(px(10.5)).text_color(t.success))
+                .child(Label::new(format!("−{dels}")).font_family("monospace").text_size(px(10.5)).text_color(t.red))))
+        .child(Button::new(ElementId::NamedInteger("edit-rev".into(), id)).label("Review").ghost().small()
+            .on_click(move |_, window, cx| on_review(window, cx)));
+
+    let mut card = div().id(ElementId::NamedInteger("edit".into(), id))
+        .rounded_md().border_1().border_color(t.border).bg(t.muted)
+        .flex().flex_col()
+        .child(header);
+    if !path.is_empty() {
+        card = card.child(div().flex().items_center().justify_between()
+            .border_t_1().border_color(t.border).px_3().py_1()
+            .child(Label::new(path.to_string()).font_family("monospace").text_size(px(10.5)).text_color(t.muted_foreground).truncate())
+            .child(div().flex().items_center().gap_1().flex_shrink_0()
+                .child(Label::new(format!("+{adds}")).font_family("monospace").text_size(px(10.5)).text_color(t.success))
+                .child(Label::new(format!("−{dels}")).font_family("monospace").text_size(px(10.5)).text_color(t.red))));
+    }
+    if open && !detail.is_empty() {
+        card = card.child(div().border_t_1().border_color(t.border).px_3().py_2()
+            .font_family("monospace").max_h(px(160.0)).overflow_y_scrollbar()
+            .child(Label::new(detail.to_string()).text_size(px(11.0)).text_color(t.foreground)));
+    }
+    card
+}
