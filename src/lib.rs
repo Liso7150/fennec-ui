@@ -7,6 +7,7 @@
 //! and persistence stay in each app.
 
 pub mod controls;
+pub mod inspector;
 pub mod markdown;
 pub mod plugin;
 pub mod theme;
