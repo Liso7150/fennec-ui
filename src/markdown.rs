@@ -219,7 +219,21 @@ pub fn md_div(t: &Theme, text: &str, base: f32, dim: bool, msg_idx: usize) -> Di
         }
         for (ri, run) in line.runs.iter().enumerate() {
             let run_id = msg_idx * 100000 + li * 100 + ri;
-            row = row.child(run_div(t, run, size, body, line.head > 0, run_id));
+            let el = run_div(t, run, size, body, line.head > 0, run_id);
+            // A run without a space is one token — the path of a delivered file,
+            // a command — and in this row gpui sizes it to its own width, so it
+            // runs past the pane and the rest of it is never drawn. Handing it
+            // the row's leftover width as a box makes the text element break it
+            // mid-token, the way the group rows and the approved-commands list do.
+            let token = match run {
+                Run::Text(s) | Run::Strong(s) | Run::Em(s) | Run::Code(s) => !s.contains(' '),
+                Run::Link { .. } => false,
+            };
+            row = row.child(if token {
+                div().flex().flex_col().flex_1().overflow_hidden().child(el)
+            } else {
+                div().child(el)
+            });
         }
         col = col.child(row);
     }

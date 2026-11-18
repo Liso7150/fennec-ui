@@ -17,6 +17,7 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 
 use crate::markdown::rich_div;
+use crate::timeline::GroupRow;
 
 /// First line of `s`, trimmed and bounded to `n` chars with an ellipsis.
 pub fn truncate(s: &str, n: usize) -> String {
@@ -157,20 +158,30 @@ where
     let header = div().id(ElementId::NamedInteger("action-h".into(), id))
         .flex().items_center().justify_between().px_3().py_1().cursor_pointer()
         .on_click(move |_, window, cx| on_toggle(window, cx))
-        .child(div().flex().items_center().gap_2().overflow_hidden()
+        .child(div().flex().items_center().gap_2().flex_1().overflow_hidden()
             .child(Label::new(if open { "▾" } else { "▸" }).text_size(px(10.0)).text_color(t.muted_foreground))
             .child(Label::new(icon.to_string()).text_size(px(13.0)).text_color(t.primary))
-            .child(Label::new(title.to_string()).text_size(px(12.5)).font_weight(FontWeight::MEDIUM).truncate()))
+            // The running call's description wraps rather than being cut, as the
+            // PWA's .action-label does; flex_1 is what constrains it.
+            .child(Label::new(title.to_string()).text_size(px(12.5)).font_weight(FontWeight::MEDIUM)))
         .child(Label::new(status_text.to_string()).text_size(px(11.0)).text_color(status_color));
 
     let mut card = div().id(ElementId::NamedInteger("action".into(), id))
         .rounded_md().border_1().border_color(t.border).bg(t.muted)
         .flex().flex_col()
         .child(header);
-    if open && !detail.is_empty() {
+    // The one call that is not folded away is the one still running, and it has
+    // to visibly expand before any output has arrived — an empty body reads as a
+    // broken toggle, not as a tool that has not printed yet.
+    if open {
+        let body = match (detail.is_empty(), status_text.starts_with("Running")) {
+            (true, true) => "No output yet.",
+            (true, false) => "This call returned no output.",
+            (false, _) => detail,
+        };
         card = card.child(div().border_t_1().border_color(t.border).px_3().py_2()
             .font_family("monospace").max_h(px(160.0)).overflow_y_scrollbar()
-            .child(Label::new(detail.to_string()).text_size(px(11.0)).text_color(t.muted_foreground)));
+            .child(Label::new(body.to_string()).text_size(px(11.0)).text_color(t.muted_foreground)));
     }
     card
 }
@@ -201,9 +212,12 @@ where
                 .flex().items_center().justify_center().flex_shrink_0()
                 .child(Label::new(badge.to_string()).font_family("monospace")
                     .text_size(px(8.5)).text_color(t.primary)))
-            .child(div().flex().flex_col().overflow_hidden()
-                .child(Label::new(name.to_string()).font_weight(FontWeight::SEMIBOLD).text_size(px(12.5)).truncate())
-                .child(Label::new(subtitle.to_string()).font_family("monospace").text_size(px(10.5)).text_color(t.muted_foreground).truncate())))
+            .child(div().flex().flex_col().flex_1().overflow_hidden()
+                // No .truncate(): a delivered file's name and directory are its
+                // identity, so a long one wraps inside the card instead of being
+                // cut — the same treatment the folded group rows give a path.
+                .child(Label::new(name.to_string()).font_weight(FontWeight::SEMIBOLD).text_size(px(12.5)))
+                .child(Label::new(subtitle.to_string()).font_family("monospace").text_size(px(10.5)).text_color(t.muted_foreground))))
         .child(Label::new(trailing.to_string()).text_size(px(12.0)).text_color(t.muted_foreground));
     if let Some(on_open) = on_open {
         card = card.cursor_pointer().on_click(move |_, window, cx| on_open(window, cx));
@@ -251,7 +265,8 @@ where
     if !path.is_empty() {
         card = card.child(div().flex().items_center().justify_between()
             .border_t_1().border_color(t.border).px_3().py_1()
-            .child(Label::new(path.to_string()).font_family("monospace").text_size(px(10.5)).text_color(t.muted_foreground).truncate())
+            .child(div().flex().flex_1().overflow_hidden()
+                .child(Label::new(path.to_string()).font_family("monospace").text_size(px(10.5)).text_color(t.muted_foreground)))
             .child(div().flex().items_center().gap_1().flex_shrink_0()
                 .child(Label::new(format!("+{adds}")).font_family("monospace").text_size(px(10.5)).text_color(t.success))
                 .child(Label::new(format!("−{dels}")).font_family("monospace").text_size(px(10.5)).text_color(t.red))));
@@ -262,6 +277,98 @@ where
             .child(Label::new(detail.to_string()).text_size(px(11.0)).text_color(t.foreground)));
     }
     card
+}
+
+/// A run of settled calls folded into one block: "Written 3 files" or
+/// "Ran 5 tools", with the calls themselves behind the toggle. Collapsed by
+/// default — a long run is noise until the user asks what it actually did — and
+/// `on_row` is what a row click means to this app (open the file, review the
+/// change), so a block whose rows lead nowhere is built without it.
+#[allow(clippy::too_many_arguments)]
+pub fn tool_group<F, G>(
+    t: &Theme,
+    id: u64,
+    icon: &str,
+    title: &str,
+    rows: &[GroupRow],
+    open: bool,
+    on_toggle: F,
+    on_row: Option<G>,
+) -> Stateful<Div>
+where
+    F: Fn(&mut Window, &mut App) + 'static,
+    G: Fn(usize, &mut Window, &mut App) + Clone + 'static,
+{
+    let failed = rows.iter().filter(|r| r.failed).count();
+    let header = div().id(ElementId::NamedInteger("group-h".into(), id))
+        .flex().items_center().justify_between().px_3().py_1().cursor_pointer()
+        .on_click(move |_, window, cx| on_toggle(window, cx))
+        .child(div().flex().items_center().gap_2().overflow_hidden()
+            .child(Label::new(if open { "▾" } else { "▸" }).text_size(px(10.0)).text_color(t.muted_foreground))
+            .child(Label::new(icon.to_string()).text_size(px(12.0)).text_color(t.primary))
+            .child(Label::new(title.to_string()).text_size(px(12.5)).font_weight(FontWeight::MEDIUM)))
+        // A failed call has to be legible without expanding the block: the count
+        // is the one thing on this row that is not the user's own doing.
+        .children((failed > 0).then(|| Label::new(format!("{failed} failed")).text_size(px(11.0)).text_color(t.red)));
+
+    let mut card = div().id(ElementId::NamedInteger("group".into(), id))
+        .rounded_md().border_1().border_color(t.border).bg(t.muted)
+        .flex().flex_col()
+        .child(header);
+    if open {
+        let mut body = div().border_t_1().border_color(t.border).flex().flex_col()
+            .max_h(px(220.0)).overflow_y_scrollbar();
+        for (i, row) in rows.iter().enumerate() {
+            let status_color = if row.failed { t.red } else { t.muted_foreground };
+            // The row id carries its block's id: two blocks open at once would
+            // otherwise both claim `group-row 0` and a debug build aborts on the
+            // duplicate a11y id.
+            let mut line = div().id(ElementId::NamedInteger(format!("group-row-{id}").into(), i as u64))
+                .flex().items_start().gap_2().px_3().py(px(4.0))
+                // A row exists to say which file or command was called, so a long
+                // path wraps instead of being cut off — the same rule the approved
+                // commands list follows. The label needs its own column: as a direct
+                // child of this row its min-content width is one unbroken path, which
+                // pushes past the pane and gets clipped instead of wrapping.
+                .child(Label::new(row.icon.clone()).font_family("monospace").text_size(px(9.5)).text_color(t.primary).flex_shrink_0())
+                .child(div().flex().flex_col().flex_1().overflow_hidden()
+                    .child(Label::new(row.label.clone()).font_family("monospace").text_size(px(11.0)).text_color(t.foreground)))
+                .child(div().flex().items_center().gap_2().flex_shrink_0()
+                    .children((row.adds > 0).then(|| Label::new(format!("+{}", row.adds))
+                        .font_family("monospace").text_size(px(10.5)).text_color(t.success)))
+                    .children((row.dels > 0).then(|| Label::new(format!("−{}", row.dels))
+                        .font_family("monospace").text_size(px(10.5)).text_color(t.red)))
+                    .children((!row.status.is_empty()).then(|| Label::new(row.status.clone())
+                        .text_size(px(10.5)).text_color(status_color))));
+            if let Some(on_row) = &on_row {
+                let cb = on_row.clone();
+                line = line.cursor_pointer().hover(|this| this.bg(t.background))
+                    .on_click(move |_, window, cx| cb(i, window, cx));
+            }
+            body = body.child(line);
+        }
+        card = card.child(body);
+    }
+    card
+}
+
+/// One call's own output, on demand. The folded block keeps the timeline short;
+/// this keeps the text reachable, which is what a user wants when a row reads
+/// `Failed`. Both shells need it, so it lives here once.
+pub fn show_output(title: &str, text: &str, window: &mut Window, cx: &mut App) {
+    let title = title.to_string();
+    let body = if text.trim().is_empty() {
+        "This call returned no output.".to_string()
+    } else {
+        text.trim().to_string()
+    };
+    window.open_dialog(cx, move |dialog, _, _| {
+        let (title, body) = (title.clone(), body.clone());
+        dialog.title(title).content(move |content, _, _| {
+            content.child(div().max_h(px(420.0)).overflow_y_scrollbar().font_family("monospace")
+                .child(Label::new(body.clone()).text_size(px(11.5))))
+        })
+    });
 }
 
 /// The composer input dock: a muted hint line above the multiline input.

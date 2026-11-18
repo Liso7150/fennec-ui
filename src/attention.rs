@@ -141,6 +141,28 @@ pub fn delivery_verb_from_title(title: &str) -> Option<&'static str> {
     }
 }
 
+/// What a write's display title says, in the two things a file row needs: the
+/// verb the call used and the path it named. Shells that kept only the title (the
+/// coding agent stores no arguments on the message) still have to answer "which
+/// file, and did it create or update it", and they must not count the same write
+/// twice because the loop also delivered a chip for it.
+///
+/// A leading category badge is stripped first: the coding agent spells a call
+/// `"EDIT · Write file src/a.py"`, and only the `EDIT` badge is ever a write, so
+/// nothing else is split on the separator (a path may contain ` · ` itself).
+pub fn write_of_title(title: &str) -> Option<(&'static str, String)> {
+    let title = match title.split_once(" · ") {
+        Some(("EDIT", rest)) => rest,
+        _ => title,
+    };
+    let verb = delivery_verb_from_title(title)?;
+    // `describe_call` writes "Write file <path>" and "Edit file <path>"; the
+    // path is everything after the word `file`, because a path may contain
+    // spaces and must survive intact.
+    let path = title.split_once(" file ")?.1.trim();
+    (!path.is_empty()).then(|| (verb, path.to_string()))
+}
+
 /// What the run changed, appended to its last answer once it is done: one line
 /// per file it put on disk, with the verb the call used. Paths stay as the call
 /// wrote them (repo-relative), because that is what the user types to open one.
@@ -376,7 +398,7 @@ mod tests {
     /// to one path are one delivered file.
     #[test]
     fn a_write_delivers_and_is_listed_once() {
-        use crate::attention::{delivery_summary, delivery_verb, delivery_verb_from_title};
+        use crate::attention::{delivery_summary, delivery_verb, delivery_verb_from_title, write_of_title};
         assert_eq!(delivery_verb("write_file"), Some("created"));
         assert_eq!(delivery_verb("edit_file"), Some("updated"));
         // A read names a path but changes nothing, so it delivers nothing.
@@ -387,6 +409,13 @@ mod tests {
         assert_eq!(delivery_verb_from_title("Edit file notes/todo list.md"), Some("updated"));
         assert_eq!(delivery_verb_from_title("Read file src/a.py"), None);
         assert_eq!(delivery_verb_from_title(""), None);
+        // The agent's badge-prefixed spelling resolves to the same pair, and a
+        // path with spaces or the separator itself survives.
+        assert_eq!(write_of_title("EDIT · Write file src/a.py"), Some(("created", "src/a.py".into())));
+        assert_eq!(write_of_title("Edit file notes/todo list.md"), Some(("updated", "notes/todo list.md".into())));
+        assert_eq!(write_of_title("EDIT · Write file a · b.md"), Some(("created", "a · b.md".into())));
+        assert_eq!(write_of_title("CMD · Run command ls · list"), None);
+        assert_eq!(write_of_title("Write file "), None);
         assert_eq!(delivery_summary(&[]), "");
         let items = [("src/a.py", "created"), ("src/a.py", "updated"), (".local-docs/b.md", "updated")];
         assert_eq!(
