@@ -163,24 +163,16 @@ pub fn write_of_title(title: &str) -> Option<(&'static str, String)> {
     (!path.is_empty()).then(|| (verb, path.to_string()))
 }
 
-/// What the run changed, appended to its last answer once it is done: one line
-/// per file it put on disk, with the verb the call used. Paths stay as the call
-/// wrote them (repo-relative), because that is what the user types to open one.
-/// Empty when nothing was delivered — a read-only run has no files to list.
-pub fn delivery_summary(items: &[(&str, &str)]) -> String {
-    if items.is_empty() {
-        return String::new();
-    }
-    let mut seen: Vec<&str> = Vec::new();
-    let mut lines = String::new();
-    for (path, verb) in items {
-        if seen.contains(path) {
-            continue;
-        }
-        seen.push(path);
-        lines.push_str(&format!("- `{path}` — {verb}\n"));
-    }
-    format!("**Delivered {} file{}**\n\n{}", seen.len(), if seen.len() == 1 { "" } else { "s" }, lines.trim_end())
+/// The delivered-file list that used to be written into the last answer as
+/// prose. A file is delivered as a chip now, and the chip carries the same
+/// words, so the paragraph is trimmed out of history rather than shown twice.
+/// Returns `true` when that leaves the message with nothing else in it.
+pub fn strip_delivery_prose(text: &mut String) -> bool {
+    let Some(at) = text.find("**Delivered ") else { return false };
+    text.truncate(at);
+    let kept = text.trim_end().to_string();
+    *text = kept;
+    text.is_empty()
 }
 
 /// The call itself, as one compact line under the title.
@@ -393,12 +385,12 @@ mod tests {
         assert_eq!(clip(&"字".repeat(50), 3).chars().count(), 3);
     }
 
-    /// Only the tools that put bytes on disk deliver a file, and the closing
-    /// summary is built from the calls rather than the model's prose: two writes
-    /// to one path are one delivered file.
+    /// Only the tools that put bytes on disk deliver a file, and the chip — not
+    /// a paragraph — is what says so: two writes to one path are one delivered
+    /// file, and the prose list older history holds is trimmed out of the answer.
     #[test]
     fn a_write_delivers_and_is_listed_once() {
-        use crate::attention::{delivery_summary, delivery_verb, delivery_verb_from_title, write_of_title};
+        use crate::attention::{delivery_verb, delivery_verb_from_title, strip_delivery_prose, write_of_title};
         assert_eq!(delivery_verb("write_file"), Some("created"));
         assert_eq!(delivery_verb("edit_file"), Some("updated"));
         // A read names a path but changes nothing, so it delivers nothing.
@@ -416,12 +408,18 @@ mod tests {
         assert_eq!(write_of_title("EDIT · Write file a · b.md"), Some(("created", "a · b.md".into())));
         assert_eq!(write_of_title("CMD · Run command ls · list"), None);
         assert_eq!(write_of_title("Write file "), None);
-        assert_eq!(delivery_summary(&[]), "");
-        let items = [("src/a.py", "created"), ("src/a.py", "updated"), (".local-docs/b.md", "updated")];
-        assert_eq!(
-            delivery_summary(&items),
-            "**Delivered 2 files**\n\n- `src/a.py` — created\n- `.local-docs/b.md` — updated"
-        );
-        assert!(delivery_summary(&[("src/a.py", "created")]).contains("1 file**"));
+        // An answer that also wrote something keeps its prose; the file list goes.
+        let mut kept = "Made the change.\n\n**Delivered 2 files**\n\n- `src/a.py` — created".to_string();
+        assert!(!strip_delivery_prose(&mut kept));
+        assert_eq!(kept, "Made the change.");
+        // An answer that was nothing but the list is empty afterwards, so the
+        // caller drops the message instead of drawing an empty bubble.
+        let mut only = "**Delivered 1 file**\n\n- `src/a.py` — created".to_string();
+        assert!(strip_delivery_prose(&mut only));
+        assert_eq!(only, "");
+        // Text the model wrote that merely mentions the word stays untouched.
+        let mut plain = "I delivered the file you asked for.".to_string();
+        assert!(!strip_delivery_prose(&mut plain));
+        assert_eq!(plain, "I delivered the file you asked for.");
     }
 }

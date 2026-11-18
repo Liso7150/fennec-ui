@@ -279,11 +279,12 @@ where
     card
 }
 
-/// A run of settled calls folded into one block: "Written 3 files" or
-/// "Ran 5 tools", with the calls themselves behind the toggle. Collapsed by
-/// default — a long run is noise until the user asks what it actually did — and
-/// `on_row` is what a row click means to this app (open the file, review the
-/// change), so a block whose rows lead nowhere is built without it.
+/// The actions of one stretch of a run — everything between two answers — folded
+/// into one block titled by its row count, with the calls themselves behind the
+/// toggle. `open` is the caller's decision, which is [`crate::timeline::is_open`]:
+/// newest block open, the rest folded until asked. `on_row` is what a row click
+/// means to this app (open the file, review the change), so a block whose rows
+/// lead nowhere is built without it.
 #[allow(clippy::too_many_arguments)]
 pub fn tool_group<F, G>(
     t: &Theme,
