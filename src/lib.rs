@@ -6,7 +6,9 @@
 //! creation dialog. Those pieces live here once; app state, backend dispatch,
 //! and persistence stay in each app.
 
+pub mod controls;
 pub mod markdown;
+pub mod plugin;
 pub mod theme;
 pub mod widgets;
 pub mod workspace_dialog;

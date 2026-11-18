@@ -7,10 +7,11 @@
 
 use gpui_kit::component::{
     button::{Button, ButtonVariants},
+    input::{Input, InputState},
     label::Label,
     notification::Notification,
     scroll::ScrollableElement,
-    Sizable, Theme, WindowExt,
+    Disableable, Sizable, Theme, WindowExt,
 };
 use gpui_kit::prelude::*;
 use gpui_kit::*;
@@ -106,9 +107,11 @@ where
     let header = div().flex().items_center().justify_between().px_4().py_1()
         .child(div().flex().items_center().gap_2()
             .child(Label::new("☰").text_size(px(13.0)).text_color(t.muted_foreground))
-            .child(Label::new(format!("Task queue · {len} item{}", if len == 1 { "" } else { "s" }))
-                .font_weight(FontWeight::SEMIBOLD).text_size(px(12.0))))
+            .child(Label::new("Task queue").font_weight(FontWeight::SEMIBOLD).text_size(px(12.0)))
+            .child(Label::new(format!("{len} item{}", if len == 1 { "" } else { "s" }))
+                .text_size(px(11.0)).text_color(t.muted_foreground)))
         .child(Button::new("queue-view-all").label("View all").ghost().xsmall()
+            .text_color(t.link)
             .on_click(move |_, window, cx| on_view_all(window, cx)));
 
     let mut rows = div().flex().flex_col().gap_0().max_h(px(120.0)).overflow_y_scrollbar();
@@ -116,14 +119,15 @@ where
         let is_next = i == 0;
         rows = rows.child(
             div().id(ElementId::NamedInteger("queue-item".into(), i as u64))
-                .flex().items_center().justify_between().px_4().py_1().bg(t.muted)
+                .flex().items_center().justify_between().px_4().py_1()
+                .border_t_1().border_color(t.border).bg(t.background)
                 .child(div().flex().items_center().gap_2().overflow_hidden()
                     .child(div().w(px(6.0)).h(px(6.0)).flex_shrink_0().rounded_full()
                         .bg(if is_next { t.success } else { t.muted_foreground }))
                     .child(Label::new(truncate(text, 80)).text_size(px(12.0)).truncate()))
                 .child(Label::new(if is_next { "Next" } else { "Queued" })
-                    .font_weight(FontWeight::SEMIBOLD).text_size(px(10.5))
-                    .text_color(if is_next { t.success } else { t.muted_foreground })),
+                    .text_size(px(10.5))
+                    .text_color(t.muted_foreground)),
         );
     }
 
@@ -252,4 +256,80 @@ where
             .child(Label::new(detail.to_string()).text_size(px(11.0)).text_color(t.foreground)));
     }
     card
+}
+
+/// The composer input dock: a muted hint line above the multiline input.
+pub fn composer_dock(t: &Theme, input: &Entity<InputState>, hint: &str) -> Stateful<Div> {
+    div().id("composer-dock").rounded_md().border_1().border_color(t.border).p_3()
+        .child(Label::new(hint.to_string()).text_size(px(13.0)).text_color(t.muted_foreground))
+        .child(div().mt_2().child(Input::new(input)))
+}
+
+/// Attached-file chips shown above the composer; each has a remove ×.
+pub fn attachment_chips<F>(t: &Theme, items: &[(String, bool)], on_remove: F) -> Div
+where
+    F: Fn(usize, &mut Window, &mut App) + Clone + 'static,
+{
+    let mut row = div().flex().flex_wrap().gap_1().px_2().py_1();
+    for (i, (name, is_image)) in items.iter().enumerate() {
+        let cb = on_remove.clone();
+        row = row.child(
+            div().flex().items_center().gap_1().px_2().py_1().rounded_md().bg(t.muted)
+                .child(Label::new(if *is_image { "🖼" } else { "📄" }).text_size(px(12.0)))
+                .child(Label::new(truncate(name, 40)).text_size(px(11.0)))
+                .child(Button::new(ElementId::NamedInteger("att-remove".into(), i as u64))
+                    .label("×").ghost().xsmall()
+                    .on_click(move |_, window, cx| cb(i, window, cx))),
+        );
+    }
+    row
+}
+
+/// The composer toolbar: attach + mode-colored permission trigger on the left,
+/// model selector + mic + send on the right. No "+" new-task button. Optional
+/// tools (attach, mic) render only when their plugin is enabled.
+#[allow(clippy::too_many_arguments)]
+pub fn composer_toolbar<A, P, M, C, S>(
+    t: &Theme,
+    plugins: &[crate::plugin::Plugin],
+    perm_icon: &str,
+    perm_label: &str,
+    perm_color: Hsla,
+    model_name: &str,
+    stt_recording: bool,
+    send_enabled: bool,
+    on_attach: A,
+    on_perm: P,
+    on_model: M,
+    on_mic: C,
+    on_send: S,
+) -> Div
+where
+    A: Fn(&mut Window, &mut App) + 'static,
+    P: Fn(&mut Window, &mut App) + 'static,
+    M: Fn(&mut Window, &mut App) + 'static,
+    C: Fn(&mut Window, &mut App) + 'static,
+    S: Fn(&mut Window, &mut App) + 'static,
+{
+    use crate::plugin::enabled;
+    div().flex().items_center().justify_between()
+        .child(div().flex().items_center().gap_1()
+            .when(enabled(plugins, "attach"), |d| d.child(
+                Button::new("composer-attach").ghost().small()
+                    .child(Label::new("📎").text_size(px(15.0)))
+                    .on_click(move |_, window, cx| on_attach(window, cx))))
+            .child(Button::new("permission-trigger").ghost().small()
+                .child(Label::new(format!("{perm_icon} {perm_label}")).text_size(px(12.0)).text_color(perm_color))
+                .on_click(move |_, window, cx| on_perm(window, cx))))
+        .child(div().flex().items_center().gap_2()
+            .child(Button::new("model-trigger").ghost().small()
+                .child(Label::new(format!("⚡ {model_name}")).text_size(px(12.0)))
+                .on_click(move |_, window, cx| on_model(window, cx)))
+            .when(enabled(plugins, "stt"), |d| d.child(
+                Button::new("composer-mic").ghost().small()
+                    .child(Label::new(if stt_recording { "⏹" } else { "🎤" }).text_size(px(15.0)))
+                    .on_click(move |_, window, cx| on_mic(window, cx))))
+            .child(Button::new("send").label("↑").primary().small()
+                .when(!send_enabled, |b| b.disabled(true))
+                .on_click(move |_, window, cx| on_send(window, cx))))
 }
