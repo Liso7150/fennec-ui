@@ -272,9 +272,34 @@ pub fn artifact_kind(name: &str) -> &'static str {
         "json" | "toml" | "yaml" | "yml" => "Config file",
         "txt" => "Text file",
         "js" | "ts" | "tsx" | "jsx" => "Script",
-        "html" | "css" => "Web file",
+        "html" => "HTML",
+        "htm" => "HTML",
+        "css" => "CSS",
         _ => "File attachment",
     }
+}
+
+/// The extension shown inside the delivered file's badge tile, uppercased and
+/// capped at four characters so an unusual suffix still fits the square.
+pub fn artifact_badge(name: &str) -> String {
+    let ext = name.rsplit_once('.').map(|(_, e)| e).unwrap_or("file");
+    let upper = ext.to_ascii_uppercase();
+    if upper.chars().count() <= 4 {
+        upper
+    } else {
+        upper.chars().take(4).collect()
+    }
+}
+
+/// The delivered file's second line: "<dir> · <kind>". A file at the workspace
+/// root has no directory to name, so it shows the kind alone.
+pub fn attachment_subtitle(path: &str, name: &str) -> String {
+    let kind = artifact_kind(name);
+    let dir = std::path::Path::new(path).parent()
+        .map(|d| d.to_string_lossy().to_string())
+        .filter(|d| !d.is_empty() && d != "." && d != "./")
+        .unwrap_or_default();
+    if dir.is_empty() { kind.to_string() } else { format!("{dir} · {kind}") }
 }
 
 /// Diff-shaped line counts (+/−, fence headers excluded) over whatever text a

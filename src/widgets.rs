@@ -175,8 +175,9 @@ where
     card
 }
 
-/// An attachment row: "📄 <name>" + "<dir> · Markdown attachment" + a trailing
-/// note ("…" or a size). When `on_open` is given the whole card is clickable.
+/// A delivered file: the type badge in a bordered tile, the name in semibold,
+/// "<dir> · Markdown attachment" under it in mono, and a trailing "…" (the
+/// menu affordance) or a size. When `on_open` is given the whole card opens it.
 pub fn attachment_card<F>(
     t: &Theme,
     id: u64,
@@ -188,16 +189,21 @@ pub fn attachment_card<F>(
 where
     F: Fn(&mut Window, &mut App) + 'static,
 {
+    // The badge is the extension, not a generic page: two delivered files side
+    // by side have to read as different kinds at a glance.
+    let badge = crate::markdown::artifact_badge(name);
     let mut card = div().id(ElementId::NamedInteger("attach".into(), id))
         .rounded_md().border_1().border_color(t.border).bg(t.muted).px_3().py_2()
         .flex().items_center().justify_between()
         .child(div().flex().items_center().gap_2().overflow_hidden()
-            .child(div().w(px(26.0)).h(px(26.0)).rounded_md().bg(t.primary)
+            .child(div().w(px(26.0)).h(px(26.0)).rounded_md().border_1().border_color(t.border)
+                .bg(t.background)
                 .flex().items_center().justify_center().flex_shrink_0()
-                .child(Label::new("📄").text_size(px(12.0)).text_color(t.background)))
+                .child(Label::new(badge.to_string()).font_family("monospace")
+                    .text_size(px(8.5)).text_color(t.primary)))
             .child(div().flex().flex_col().overflow_hidden()
                 .child(Label::new(name.to_string()).font_weight(FontWeight::SEMIBOLD).text_size(px(12.5)).truncate())
-                .child(Label::new(subtitle.to_string()).text_size(px(10.5)).text_color(t.muted_foreground).truncate())))
+                .child(Label::new(subtitle.to_string()).font_family("monospace").text_size(px(10.5)).text_color(t.muted_foreground).truncate())))
         .child(Label::new(trailing.to_string()).text_size(px(12.0)).text_color(t.muted_foreground));
     if let Some(on_open) = on_open {
         card = card.cursor_pointer().on_click(move |_, window, cx| on_open(window, cx));

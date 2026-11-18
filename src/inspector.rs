@@ -94,8 +94,13 @@ pub fn inspector_panel(t: &Theme, sections: Vec<InspectSection>) -> impl IntoEle
 
 /// One inspectable section (header + expandable rows). Click a row header to
 /// expand its detail in place; rows with a URL get an "open in browser" button.
-pub fn inspect_section(t: &Theme, section: InspectSection) -> Div {
-    let mut sec = div().px_4().py_3().border_b_1().border_color(t.border).flex().flex_col().gap_1()
+pub fn inspect_section(t: &Theme, section: InspectSection) -> impl IntoElement {
+    // The section id namespaces every label inside it. `Label::new` is
+    // `#[track_caller]`, so all six sections built by one app would otherwise
+    // hand the a11y tree the same call-site id and the duplicate would abort a
+    // debug build or silently drop the row from the tree in a release build.
+    let id = ElementId::Name(SharedString::from(format!("insp-sec-{}", section.id)));
+    let mut sec = div().id(id).px_4().py_3().border_b_1().border_color(t.border).flex().flex_col().gap_1()
         .child(div().flex().items_center().justify_between()
             .child(div().flex().items_center().gap_2()
                 .child(Label::new(section.icon).text_size(px(13.0)).text_color(t.primary))
@@ -108,7 +113,8 @@ pub fn inspect_section(t: &Theme, section: InspectSection) -> Div {
         let key = format!("{}:{}", section.id, item.id);
         let open = is_open(&key);
         let key_toggle = key.clone();
-        let mut row = div().flex().flex_col().gap_1().p_2().rounded_md().bg(t.muted)
+        let mut row = div().id(ElementId::Name(SharedString::from(format!("insp-row-{key}"))))
+            .flex().flex_col().gap_1().p_2().rounded_md().bg(t.muted)
             .child(div().flex().items_center().justify_between().gap_2()
                 .child(Button::new(ElementId::Name(SharedString::from(format!("insp-h-{key}"))))
                     .ghost().small().flex_1().justify_start()
