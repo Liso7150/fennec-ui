@@ -26,6 +26,12 @@ where
     // The dialog builder may run again when the dialog layer is rebuilt, so
     // the callback is shared behind an Rc rather than moved into one build.
     let on_create = Rc::new(on_create);
+    // Selection state lives OUTSIDE the builder: the builder re-runs on every
+    // render, so state created inside it would reset on each window.refresh().
+    let selected_icon: Rc<Cell<usize>> = Rc::new(Cell::new(0));
+    let selected_color: Rc<Cell<usize>> = Rc::new(Cell::new(0));
+    let indexed: Rc<Cell<bool>> = Rc::new(Cell::new(true));
+    let source_folders: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(vec![]));
 
     let icons: Vec<&'static str> = vec!["📁", "💻", "🔬", "🧪", "🎨", "🤖", "⚙️", "🔧", "📦", "🚀"];
     let colors: Vec<(f32, f32, f32)> = vec![
@@ -42,10 +48,10 @@ where
     window.open_dialog(cx, move |dialog, _, _| {
         let name_input = name_input.clone();
         let on_create = on_create.clone();
-        let selected_icon: Rc<Cell<usize>> = Rc::new(Cell::new(0));
-        let selected_color: Rc<Cell<usize>> = Rc::new(Cell::new(0));
-        let indexed: Rc<Cell<bool>> = Rc::new(Cell::new(true));
-        let source_folders: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(vec![]));
+        let selected_icon = selected_icon.clone();
+        let selected_color = selected_color.clone();
+        let indexed = indexed.clone();
+        let source_folders = source_folders.clone();
         let icons = icons.clone();
         let colors = colors.clone();
 
@@ -66,7 +72,7 @@ where
                         // Workspace name
                         .child(div().flex().flex_col().gap_2()
                             .child(Label::new("Workspace name").font_weight(FontWeight::SEMIBOLD).text_size(px(12.0)))
-                            .child(Input::new(&name_input).h(px(32.0)))
+                            .child(Input::new(&name_input).id("ws-name-input").h(px(32.0)))
                         )
                         // Source folders
                         .child(div().flex().flex_col().gap_2()
@@ -75,17 +81,20 @@ where
                                 .border_1().border_color(t.border).border_dashed()
                                 .on_click({
                                     let source_folders = source_folders.clone();
-                                    move |_, _, cx| {
+                                    move |_, window, cx| {
                                         let rx = cx.prompt_for_paths(PathPromptOptions {
                                             files: false, directories: true, multiple: true, prompt: None,
                                         });
                                         let source_folders = source_folders.clone();
-                                        cx.spawn(async move |_cx| {
+                                        window.spawn(cx, async move |cx| {
                                             if let Ok(Ok(Some(paths))) = rx.await {
                                                 let folder_paths: Vec<String> = paths.iter()
                                                     .map(|p| p.to_string_lossy().to_string())
                                                     .collect();
-                                                source_folders.borrow_mut().extend(folder_paths);
+                                                let _ = cx.update(|window, _| {
+                                                    source_folders.borrow_mut().extend(folder_paths);
+                                                    window.refresh();
+                                                });
                                             }
                                         }).detach();
                                     }

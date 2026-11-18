@@ -136,6 +136,20 @@ pub fn transcribe_samples(samples: &[f32], rate: u32) -> String {
         Ok(c) => c,
         Err(_) => return String::new(),
     };
+    // The Fennec sidecar (fennec_core.stt) takes a RAW audio body on /transcribe.
+    if let Ok(resp) = client
+        .post("http://127.0.0.1:8183/transcribe")
+        .header("Content-Type", "audio/wav")
+        .body(wav.clone())
+        .send()
+    {
+        if let Ok(json) = resp.json::<serde_json::Value>() {
+            if let Some(text) = json.get("text").and_then(|t| t.as_str()) {
+                return text.to_string();
+            }
+        }
+    }
+    // OpenAI-compatible fallback (multipart).
     for path in ["/v1/audio/transcriptions", "/transcribe"] {
         let url = format!("http://127.0.0.1:8183{}", path);
         let part = match reqwest::blocking::multipart::Part::bytes(wav.clone())
