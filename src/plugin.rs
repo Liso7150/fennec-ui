@@ -1,5 +1,5 @@
 //! Everything-is-a-plugin: each optional UI capability is declared as a plugin
-//! with a stable id. The shells render composer tools / inspector sections from
+//! with a stable id. The shell renders composer tools / inspector sections from
 //! this registry instead of hard-coding them, so a feature can be disabled (or
 //! later supplied by an external plugin) without touching layout code.
 //!

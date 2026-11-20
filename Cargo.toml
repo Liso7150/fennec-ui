@@ -4,7 +4,7 @@ version = "1.0.0"
 edition = "2024"
 rust-version = "1.85"
 license = "MIT"
-description = "Shared gpui-kit UI pieces for the Fennec desktop and coding-agent GUIs: theme presets, markdown rendering, message widgets, and the workspace-creation dialog."
+description = "Shared gpui-kit UI pieces for the Fennec desktop shell: theme presets, markdown rendering, message widgets, and the workspace-creation dialog."
 
 [lib]
 name = "fennec_ui"

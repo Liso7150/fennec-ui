@@ -1,6 +1,7 @@
 //! The shared workspace-creation dialog: name input, source-folder picker,
-//! emoji icon grid, color grid, and an index toggle. Ported from the
-//! fennec-coding-agent GUI so both shells create workspaces the same way.
+//! emoji icon grid, color grid, and an index toggle. It is what the native
+//! shell and the PWA agree on, so a workspace created in either has the same
+//! fields.
 //!
 //! `on_create` receives `(name, source_folders, icon, color, indexed)` plus
 //! the `&mut App`, so each app updates its own workspace store.
@@ -13,7 +14,7 @@ use gpui_kit::component::{
     input::{Input, InputState},
     label::Label,
     notification::Notification,
-    ActiveTheme, WindowExt,
+    ActiveTheme, Sizable, WindowExt,
 };
 use gpui_kit::prelude::*;
 use gpui_kit::*;
@@ -33,7 +34,10 @@ where
     let indexed: Rc<Cell<bool>> = Rc::new(Cell::new(true));
     let source_folders: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(vec![]));
 
-    let icons: Vec<&'static str> = vec!["📁", "💻", "🔬", "🧪", "🎨", "🤖", "⚙️", "🔧", "📦", "🚀"];
+    let icons: Vec<&'static str> = vec![
+        "📁", "💻", "🔬", "🧪", "🎨", "🤖", "⚙️", "🔧", "📦", "🚀",
+        "🌐", "📚", "🗂", "📝", "🧭", "🛠", "📡", "🔥", "🧠", "🎯",
+    ];
     let colors: Vec<(f32, f32, f32)> = vec![
         (0.08, 0.7, 0.5),   // orange
         (0.33, 0.6, 0.45),  // green
@@ -105,10 +109,21 @@ where
                             .child({
                                 let folders = source_folders.borrow().clone();
                                 div().flex().flex_col().gap_1().mt_1()
-                                    .children(folders.iter().map(|f| {
+                                    .children(folders.iter().enumerate().map(|(i, f)| {
                                         let t = t.clone();
-                                        div().p_2().rounded_sm().bg(t.muted)
-                                            .child(Label::new(f.as_str()).text_size(px(11.0)).font_family("monospace").truncate())
+                                        let source_folders = source_folders.clone();
+                                        div().p_2().rounded_sm().bg(t.muted).flex().items_center().gap_2()
+                                            .child(Label::new(f.as_str()).text_size(px(11.0)).font_family("monospace")
+                                                .flex_1().truncate())
+                                            .child(Button::new(format!("rm-folder-{i}")).ghost().xsmall()
+                                                .child(div().w(px(18.0)).h(px(18.0)).rounded_sm()
+                                                    .flex().items_center().justify_center()
+                                                    .child(Label::new("×").text_size(px(13.0))
+                                                        .text_color(t.muted_foreground)))
+                                                .on_click(move |_, window, _cx| {
+                                                    source_folders.borrow_mut().remove(i);
+                                                    window.refresh();
+                                                }))
                                     }))
                             })
                         )
@@ -135,7 +150,7 @@ where
                         // Workspace color
                         .child(div().flex().flex_col().gap_2()
                             .child(Label::new("Workspace color").font_weight(FontWeight::SEMIBOLD).text_size(px(12.0)))
-                            .child(div().flex().gap_2()
+                            .child(div().flex().flex_wrap().gap_2()
                                 .children(colors.iter().enumerate().map(|(i, color)| {
                                     let t = t.clone();
                                     let selected_color = selected_color.clone();
@@ -153,13 +168,14 @@ where
                         )
                         // Workspace index toggle
                         .child(div().flex().items_center().justify_between().p_3().rounded_md().bg(t.muted).border_1().border_color(t.border)
-                            .child(div().flex().flex_col()
+                            .child(div().flex().flex_col().flex_1()
                                 .child(Label::new("Workspace index").font_weight(FontWeight::SEMIBOLD).text_size(px(12.0)))
-                                .child(Label::new("Building a workspace index gives the agent more context and helps it respond more accurately.")
+                                .child(Label::new("Building a workspace index gives the agent more context.")
                                     .text_size(px(11.0)).text_color(t.muted_foreground)))
                             .child({
                                 let indexed = indexed.clone();
                                 let is_on = indexed.get();
+                                div().flex().flex_shrink_0().child(
                                 Button::new("index-toggle")
                                     .on_click(move |_, window, _cx| {
                                         indexed.set(!indexed.get());
@@ -169,7 +185,7 @@ where
                                         .bg(if is_on { t.green } else { t.muted_foreground })
                                         .flex().items_center()
                                         .child(div().w(px(18.0)).h(px(18.0)).rounded_full().bg(Hsla::white())
-                                            .ml(if is_on { px(20.0) } else { px(2.0) })))
+                                            .ml(if is_on { px(20.0) } else { px(2.0) }))))
                             })
                         )
                 }

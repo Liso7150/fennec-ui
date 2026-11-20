@@ -213,6 +213,13 @@ pub fn md_div(t: &Theme, text: &str, base: f32, dim: bool, msg_idx: usize) -> Di
         let size = base + match line.head { 1 => 6.0, 2 => 3.5, 3 => 1.5, _ => 0.0 };
         let body = if line.head > 0 { t.foreground } else if dim { t.muted_foreground } else { t.foreground };
         let line_id = msg_idx * 10000 + li;
+        // A lone run is a block, not a flex item: in a row taffy sizes it to its
+        // max-content width, so a long sentence runs past the card and the rest
+        // of it is never drawn. In the column it stretches to the card and wraps.
+        if !line.bullet && line.runs.len() == 1 {
+            col = col.child(run_div(t, &line.runs[0], size, body, line.head > 0, msg_idx * 100000 + li * 100));
+            continue;
+        }
         let mut row = div().id(ElementId::NamedInteger("mdl".into(), line_id as u64)).flex().flex_row().flex_wrap().items_center();
         if line.bullet {
             row = row.child(div().flex_shrink_0().child(Label::new("•").text_size(px(size)).text_color(body)));
@@ -222,17 +229,20 @@ pub fn md_div(t: &Theme, text: &str, base: f32, dim: bool, msg_idx: usize) -> Di
             let el = run_div(t, run, size, body, line.head > 0, run_id);
             // A run without a space is one token — the path of a delivered file,
             // a command — and in this row gpui sizes it to its own width, so it
-            // runs past the pane and the rest of it is never drawn. Handing it
-            // the row's leftover width as a box makes the text element break it
+            // runs past the pane and the rest of it is never drawn. `min_w(0)` lets
+            // the row shrink it below that, which makes the text element break it
             // mid-token, the way the group rows and the approved-commands list do.
+            // Growing it into the row's leftover width instead starves it as soon
+            // as the sentence beside it is long: measured live on 2026-11-19, an
+            // inline `kernel.errors.txt` drew as a column of 2-character fragments.
             let token = match run {
                 Run::Text(s) | Run::Strong(s) | Run::Em(s) | Run::Code(s) => !s.contains(' '),
                 Run::Link { .. } => false,
             };
             row = row.child(if token {
-                div().flex().flex_col().flex_1().overflow_hidden().child(el)
+                div().flex_shrink_1().min_w(px(0.0)).overflow_hidden().child(el)
             } else {
-                div().child(el)
+                div().flex_shrink_1().overflow_hidden().child(el)
             });
         }
         col = col.child(row);

@@ -1,10 +1,11 @@
 //! Shared "My Attention" rail: the badge that counts what still waits for the
 //! user, and the list of commands the user has already answered.
 //!
-//! Both Fennec shells gate a tool call through the same four-answer question, so
-//! the answer words, the risk colors, and the row layout live here once instead
-//! of drifting apart in two `gui_main.rs` files. Apps still own the gathering:
-//! each hands over the answered approvals its own backend reported.
+//! Every gated tool call goes through the same four-answer question, so the
+//! answer words, the risk colors, and the row layout live here once instead of
+//! drifting between the native shell and the PWA that show them. The app still
+//! owns the gathering: it hands over the answered approvals its own backend
+//! reported.
 
 use gpui_kit::component::{
     Disableable,
@@ -16,7 +17,7 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 use serde_json::Value;
 
-/// `fennec_core/loop.py:_APPROVAL_OPTIONS`. The answers a shell may send, and
+/// `fennec-core/loop.py:_APPROVAL_OPTIONS`. The answers a shell may send, and
 /// the only four the loop accepts.
 pub const APPROVAL_DECISIONS: [&str; 4] = ["allow_once", "allow_always", "reject_once", "reject_always"];
 
@@ -89,6 +90,178 @@ pub fn clip(s: &str, max: usize) -> String {
     if t.chars().count() > max { t.chars().take(max).collect() } else { t.to_string() }
 }
 
+/// The tool names the loop advertises (`fennec-core/tools.py:TOOLS`). An
+/// object that names one of these is the model spelling a call; an object
+/// naming anything else is data the user asked for.
+pub const TOOL_NAMES: [&str; 14] = [
+    "list_dir", "read_file", "write_file", "edit_file", "grep", "semantic_search",
+    "run_python", "run_shell", "git_status", "git_diff", "web_task", "coworker_task",
+    "propose_queue", "summarise",
+];
+
+/// The fence languages that mean "run this in a shell" — the same set the loop
+/// treats as a call it could have made itself (`loop.py:_SHELL_LANGS`).
+pub const SHELL_LANGS: [&str; 9] =
+    ["bash", "sh", "shell", "zsh", "ksh", "powershell", "pwsh", "cmd", "bat"];
+
+pub fn is_tool_name(s: &str) -> bool {
+    TOOL_NAMES.iter().any(|n| *n == s)
+}
+
+/// The language and body of every ``` fence, and the text left outside them.
+fn fences(text: &str) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    let mut rest = text;
+    while let Some(open) = rest.find("```") {
+        let after = &rest[open + 3..];
+        let Some(nl) = after.find('\n') else { break };
+        let (head, tail) = (&after[..nl], &after[nl + 1..]);
+        let (body, used) = match tail.find("```") {
+            Some(i) => (&tail[..i], i + 3),
+            None => (tail, tail.len()),
+        };
+        out.push((head.trim().to_lowercase(), body.to_string()));
+        rest = &tail[used..];
+    }
+    out
+}
+
+fn outside_fences(text: &str) -> String {
+    let mut out = String::new();
+    let mut rest = text;
+    while let Some(open) = rest.find("```") {
+        out.push_str(&rest[..open]);
+        let after = &rest[open + 3..];
+        let Some(nl) = after.find('\n') else { break };
+        let tail = &after[nl + 1..];
+        rest = match tail.find("```") {
+            Some(i) => &tail[i + 3..],
+            None => "",
+        };
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Whether a JSON value is, or holds, an object naming an advertised tool.
+fn value_names_tool(v: &Value) -> bool {
+    match v {
+        Value::Object(o) => ["name", "tool", "type", "command"]
+            .iter()
+            .filter_map(|k| o.get(*k).and_then(|x| x.as_str()))
+            .any(is_tool_name)
+            || o.values().any(value_names_tool),
+        Value::Array(a) => a.iter().any(value_names_tool),
+        _ => false,
+    }
+}
+
+/// The same test for a call the model ran out of room writing, which no parser
+/// can read: read the first string that follows a name slot.
+fn head_names_tool(text: &str) -> bool {
+    for key in ["\"name\"", "\"tool\"", "\"type\"", "\"command\""] {
+        let mut from = 0;
+        while let Some(rel) = text[from..].find(key) {
+            let after = &text[from + rel + key.len()..];
+            let Some(colon) = after.find(':') else { break };
+            let rest = &after[colon + 1..];
+            let Some(open) = rest.find('"') else { break };
+            let body = &rest[open + 1..];
+            let Some(close) = body.find('"') else { break };
+            if is_tool_name(&body[..close]) {
+                return true;
+            }
+            from += rel + key.len();
+        }
+    }
+    false
+}
+
+/// Whether an object/array body is a spelled call.
+fn json_is_call(body: &str) -> bool {
+    let t = body.trim_start();
+    if !t.starts_with('{') && !t.starts_with('[') {
+        return false;
+    }
+    serde_json::from_str::<Value>(t).map(|v| value_names_tool(&v)).unwrap_or(false)
+        || head_names_tool(t)
+}
+
+/// Text that is a tool call the model spelled out rather than an answer: the
+/// bare object, the `<tool_code>` tag, the same shapes inside a code fence, a
+/// fence named after a tool, or a reply that is nothing but shell blocks.
+///
+/// Read from the text alone, so it also works on restored history, where the
+/// step's call list is gone. A fence holding ordinary code, and any prose
+/// around it, is formatted output and stays on screen.
+pub fn call_blob(text: &str) -> bool {
+    let t = text.trim();
+    if t.is_empty() {
+        return false;
+    }
+    if t.starts_with('<') {
+        return true;
+    }
+    if t.starts_with('{') || t.starts_with('[') {
+        return json_is_call(t);
+    }
+    let blocks = fences(t);
+    if blocks.is_empty() {
+        return t.contains("<tool_code>");
+    }
+    for (lang, body) in &blocks {
+        let name = lang.strip_prefix("tool:").unwrap_or(lang).trim();
+        if is_tool_name(name) {
+            return true;
+        }
+        let b = body.trim();
+        if json_is_call(b) {
+            return true;
+        }
+        if "<tool_code>" == b || b.starts_with("<tool_code>") {
+            return true;
+        }
+        // `read_file path=…` spelled on the first line of a plain fence.
+        if let Some(line) = b.lines().next() {
+            let head = line.trim().strip_prefix("tool_").unwrap_or_else(|| line.trim());
+            let head = head.split([' ', '\t', '=', '(']).next().unwrap_or("");
+            if is_tool_name(head) {
+                return true;
+            }
+        }
+    }
+    // Nothing but command blocks: the loop calls that a call it failed to make
+    // (`loop.py:_only_command_fences`), so the shell calls it a blob too.
+    outside_fences(t).trim().is_empty()
+        && blocks.iter().any(|(l, b)| SHELL_LANGS.iter().any(|s| *s == l.as_str()) && !b.trim().is_empty())
+}
+
+/// Text that is the model spelling a tool call rather than answering, so a
+/// shell can keep it out of the answer area: every turn that fails to land a
+/// call spells the same blob again, and the call's own row already says what
+/// ran.
+///
+/// A shape the text carries on its own is a call whatever the step holds. A
+/// fence beside prose counts when the loop read a call out of that same step,
+/// and a fence that is itself a call object counts without that help: history
+/// restored from disk has no call list to consult.
+pub fn looks_like_call(text: &str, made_call: bool) -> bool {
+    let t = text.trim();
+    if t.is_empty() {
+        return false;
+    }
+    if call_blob(t) {
+        return true;
+    }
+    match t.chars().next() {
+        Some('{') | Some('[') | Some('<') => true,
+        Some('`') => t.starts_with("```") && made_call,
+        _ => made_call && ["\"tool\":", "\"name\":", "\"command\":", "\"args\":", "\"arguments\":"]
+            .iter()
+            .any(|key| t.contains(key)),
+    }
+}
+
 /// What a gated call is, in the two words a row shows: the tool's own table
 /// names the category, so a shell does not invent its own colour-coding.
 pub fn describe_call(name: &str, args: &Value) -> (String, String) {
@@ -118,6 +291,25 @@ pub fn describe_call(name: &str, args: &Value) -> (String, String) {
     }
 }
 
+/// The words a gated call gets on a card and in the answered list, whichever
+/// half of the record a shell happens to hold. The loop names the tool
+/// (`run_shell`) and describes the call (`Run command ls`); either spelling has
+/// to resolve to the same row, because a raw tool name is not something the
+/// user can read as a question they answered.
+///
+/// A described title is already in the user's words and is kept whole; a bare
+/// tool name is run back through `describe_call` with no arguments, which gives
+/// the human phrase without a target.
+pub fn gate_title(name: &str, described: Option<&str>) -> String {
+    if let Some(t) = described.map(str::trim).filter(|t| !t.is_empty()) {
+        if t != name {
+            return t.to_string();
+        }
+    }
+    let (_, title) = describe_call(name, &Value::Null);
+    title.trim().to_string()
+}
+
 /// The verb a delivered file is described with — only the tools that put bytes
 /// on disk deliver one. A read names a path but changes nothing, so it delivers
 /// nothing, and every shell keys its file card on this same table.
@@ -131,8 +323,8 @@ pub fn delivery_verb(name: &str) -> Option<&'static str> {
 
 /// The same verb read off the display title ("Write file src/x.py") instead of
 /// the tool name. The desktop shell keys its file cards on the title, so both
-/// spellings have to resolve to one verb or the two shells would describe the
-/// same run differently.
+/// spellings have to resolve to one verb or the native shell and the PWA would
+/// describe the same run differently.
 pub fn delivery_verb_from_title(title: &str) -> Option<&'static str> {
     match title.split_whitespace().next()?.to_ascii_lowercase().as_str() {
         "write" => Some("created"),
@@ -220,6 +412,15 @@ pub enum CardState {
     Expired,
 }
 
+/// Whether a gated call still belongs in the timeline. An answer the user has
+/// already sent is not a question, so the card leaves the run and the call goes
+/// to My Attention, where the answered list keeps it. An expired one stays: it
+/// says why a run stopped with nothing to click, which the user has to be told.
+/// The PWA mirrors this on `meta.status`.
+pub fn card_shows(state: CardState) -> bool {
+    state != CardState::Answered
+}
+
 /// One gated call the loop is stopped on, as a shell gathered it. Borrowed
 /// fields because the card is built from the app's own record, per frame.
 pub struct ApprovalCard<'a> {
@@ -264,7 +465,12 @@ where
     if let Some(path) = card.path {
         out = out.child(Label::new(format!("file · {path}")).font_family("monospace").text_size(px(11.0)).text_color(t.muted_foreground));
     }
-    out = out.child(Label::new(card.detail).font_family("monospace").text_size(px(11.0)).text_color(t.muted_foreground));
+    // The call line is the machine's view of the gate (the arguments, compact).
+    // A shell whose title already spells the call out in words has nothing left
+    // to add here, and a second identical line reads as a bug, not as detail.
+    if !card.detail.is_empty() && card.detail != card.title {
+        out = out.child(Label::new(card.detail).font_family("monospace").text_size(px(11.0)).text_color(t.muted_foreground));
+    }
     let mut buttons = div().flex().flex_row().flex_wrap().gap_2().mt_1();
     for decision in APPROVAL_DECISIONS {
         let cb = on_answer.clone();
@@ -328,7 +534,8 @@ mod tests {
     // `gpui_kit::test` attribute macro (re-exported from `gpui`), which
     // `#[test]` then resolves to instead of the built-in harness.
     use crate::attention::{
-        decision_label, needs_attention, parse_risk, APPROVAL_DECISIONS, ATTENTION_STATUSES, Risk,
+        call_blob, decision_label, looks_like_call, needs_attention, parse_risk,
+        APPROVAL_DECISIONS, ATTENTION_STATUSES, Risk,
     };
 
     /// The service refuses anything outside these four, so the list never has to
@@ -354,7 +561,7 @@ mod tests {
         assert_eq!(parse_risk("catastrophic"), Risk::Unknown);
     }
 
-    /// The two shells name a stopped run differently (`AwaitingApproval` for the
+    /// The two backends name a stopped run differently (`AwaitingApproval` for the
     /// core loop, `WaitingForApproval` for the task model), and either may carry
     /// an open question without having changed status yet.
     #[test]
@@ -367,7 +574,7 @@ mod tests {
         assert!(needs_attention("Running", 1));
     }
 
-    /// The shells read the same `/api/agent/poll` steps, so the words a gated
+    /// Every surface reads the same `/api/agent/poll` steps, so the words a gated
     /// call gets must come from one table — otherwise the two rails describe the
     /// same `run_shell` differently.
     #[test]
@@ -383,6 +590,37 @@ mod tests {
         assert_eq!(risk_word(None), "unknown");
         assert_eq!(clip("  hi  ", 40), "hi");
         assert_eq!(clip(&"字".repeat(50), 3).chars().count(), 3);
+    }
+
+    /// Each backend names a gated call from whichever half of the record it
+    /// kept, and neither spelling may put a raw tool name in front of the user:
+    /// `run_shell` is the loop's word for the call, not what the call does.
+    #[test]
+    fn a_gated_call_is_never_labelled_with_its_tool_name() {
+        use crate::attention::{describe_call, gate_title};
+        let described = "Run command cargo test";
+        assert_eq!(gate_title("run_shell", Some(described)), described);
+        // A record that only kept the tool name still reads as a command.
+        assert_eq!(gate_title("run_shell", None), "Run command");
+        assert_eq!(gate_title("read_file", Some("  ")), "Read file");
+        // A record whose title is just the tool name repeated is the same case.
+        assert_eq!(gate_title("run_shell", Some("run_shell")), "Run command");
+        // An unknown tool has no human phrase, so its name is all there is.
+        assert_eq!(gate_title("warp_drive", None), "warp_drive");
+        // The two spellings agree with the table the timeline rows use.
+        let bare = describe_call("run_python", &serde_json::json!({})).1;
+        assert_eq!(gate_title("run_python", None), bare.trim());
+    }
+
+    /// An answered card is removed from the run; a pending one and an expired one
+    /// are not, because each still tells the user something they cannot learn
+    /// from the answer alone — what it waits on, or why nothing waits any more.
+    #[test]
+    fn an_answer_leaves_the_timeline_and_a_dead_question_stays() {
+        use crate::attention::{CardState, card_shows};
+        assert!(card_shows(CardState::Pending));
+        assert!(card_shows(CardState::Expired));
+        assert!(!card_shows(CardState::Answered));
     }
 
     /// Only the tools that put bytes on disk deliver a file, and the chip — not
@@ -421,5 +659,53 @@ mod tests {
         let mut plain = "I delivered the file you asked for.".to_string();
         assert!(!strip_delivery_prose(&mut plain));
         assert_eq!(plain, "I delivered the file you asked for.");
+    }
+
+    /// A call blob never belongs in the answer area; a formatted code answer
+    /// always does.
+    #[test]
+    fn a_call_spelling_is_not_an_answer() {
+        // The shape the loop publishes beside the call it is about to run.
+        let blob = r#"{"name": "read_file", "args": {"path": "checklist.md"}}"#;
+        assert!(looks_like_call(blob, true));
+        // And when no call landed: that turn failed to parse, and the next one
+        // spells the same object again, which is the repetition to get rid of.
+        assert!(looks_like_call(blob, false));
+        assert!(looks_like_call("\u{3c}function=run_shell\u{3e}", false));
+        // A fence is a call only when the loop read one out of that step. The
+        // same fence alone is the model answering with formatted code.
+        let fence = "```rust\nfn main() {}\n```";
+        assert!(!looks_like_call(fence, false));
+        assert!(looks_like_call(fence, true));
+        // Prose answers survive either way, including one naming a parameter.
+        assert!(!looks_like_call("Made the change in `checklist.md`.", true));
+        assert!(!looks_like_call("\"args\": the bag", false));
+        assert!(!looks_like_call("", true));
+        assert!(!looks_like_call("   ", false));
+    }
+
+    /// The shapes restored history actually holds, taken verbatim from a real
+    /// `history.json`: none of them carry a call list, so the text alone has
+    /// to say they are not answers.
+    #[test]
+    fn a_fenced_call_spelling_is_not_an_answer_either() {
+        let fenced = "```json\n{\"name\": \"read_file\", \"args\": {\"path\": \"notes.txt\"}}\n```";
+        assert!(call_blob(fenced));
+        assert!(looks_like_call(fenced, false));
+        // A queue proposal is an array of the same envelope.
+        let arr = "```json\n[\n  {\n    \"type\": \"run_shell\",\n    \"command\": \"dir /s /b\"\n  }\n]\n```";
+        assert!(call_blob(arr));
+        // The fence named after the tool, and the tool named on its first line.
+        assert!(call_blob("```read_file\npath=.local-docs/queue-probe/notes.txt\n```"));
+        assert!(call_blob("```text\nread_file path=notes.txt\n```"));
+        assert!(call_blob("```text\nwrite_file path=checklist7.md content=\"1. a\"\n```"));
+        // A reply that is nothing but a command the loop could have run.
+        assert!(call_blob("```bash\ncat .local-docs/queue-probe/notes.txt\n```"));
+        // Genuine answers keep their formatting.
+        assert!(!call_blob("```python\nprint(sum(range(10)))\n```"));
+        assert!(!call_blob("```json\n{\"enabled\": true, \"name\": \"fennec\"}\n```"));
+        assert!(!call_blob("Use ```bash\nls -R\n``` to list the tree, then check the count."));
+        assert!(!call_blob("The checklist has 3 lines."));
+        assert!(!call_blob(""));
     }
 }

@@ -1,4 +1,4 @@
-//! Shared composer controls + STT transcription used by both Fennec shells.
+//! Shared composer controls + STT transcription for the Fennec desktop shell.
 //! Anything two repos need lives here, not duplicated per app.
 
 use gpui_kit::component::{
@@ -76,11 +76,30 @@ where
     d
 }
 
-/// The model-selector dropdown with a "Download new model…" row.
-pub fn model_dropdown<F, G>(t: &Theme, current: &str, on_select: F, on_download: G) -> Div
+/// The reasoning levels the model dropdown offers, in the order it draws them.
+/// The core owns what each one means to the engine; this is only the vocabulary
+/// the shells draw, so the two surfaces cannot spell the same level differently.
+pub const REASONING_LEVELS: [(&str, &str); 4] = [
+    ("auto", "Auto"),
+    ("low", "Low"),
+    ("medium", "Medium"),
+    ("high", "High"),
+];
+
+/// The model-selector dropdown with a "Download new model…" row and the
+/// reasoning-effort rows the same dropdown carries.
+pub fn model_dropdown<F, G, H>(
+    t: &Theme,
+    current: &str,
+    on_select: F,
+    on_download: G,
+    effort: &str,
+    on_effort: H,
+) -> Div
 where
     F: Fn(String, &mut Window, &mut App) + Clone + 'static,
     G: Fn(&mut Window, &mut App) + 'static,
+    H: Fn(String, &mut Window, &mut App) + Clone + 'static,
 {
     let mut d = div().absolute().bottom(px(70.0)).right(px(20.0))
         .rounded_md().border_1().border_color(t.border).bg(t.background).shadow_lg()
@@ -98,12 +117,29 @@ where
                 .on_click(move |_, window, cx| cb(id_owned.clone(), window, cx)),
         );
     }
-    d.child(div().border_t_1().border_color(t.border).my_1())
+    d = d.child(div().border_t_1().border_color(t.border).my_1())
         .child(Button::new("model-download").ghost().small().w_full().justify_start()
             .child(div().flex().items_center().gap_3().px_3().py_2()
                 .child(Label::new("⬇").text_size(px(15.0)))
                 .child(Label::new("Download new model...").text_size(px(12.0)).text_color(t.muted_foreground)))
-            .on_click(move |_, window, cx| on_download(window, cx)))
+            .on_click(move |_, window, cx| on_download(window, cx)));
+    d = d.child(div().border_t_1().border_color(t.border).mt_1()
+        .child(Label::new("Reasoning").text_size(px(10.0))
+            .text_color(t.muted_foreground).px_3().pt_2()));
+    for (level, name) in REASONING_LEVELS {
+        let selected = effort == level;
+        let cb = on_effort.clone();
+        let level_owned = level.to_string();
+        d = d.child(
+            Button::new(format!("effort-{level}")).ghost().small().w_full().justify_start()
+                .child(div().flex().items_center().gap_3().px_3().py_2()
+                    .child(Label::new(name).text_size(px(13.0)))
+                    .child(div().flex_1())
+                    .child(Label::new(if selected { "✓" } else { "" }).text_size(px(13.0)).text_color(t.success)))
+                .on_click(move |_, window, cx| cb(level_owned.clone(), window, cx)),
+        );
+    }
+    d
 }
 
 /// Write captured mono f32 samples to a WAV and POST to the faster-whisper
@@ -136,7 +172,7 @@ pub fn transcribe_samples(samples: &[f32], rate: u32) -> String {
         Ok(c) => c,
         Err(_) => return String::new(),
     };
-    // The Fennec sidecar (fennec_core.stt) takes a RAW audio body on /transcribe.
+    // The Fennec sidecar (fennec-core/stt.py) takes a RAW audio body on /transcribe.
     if let Ok(resp) = client
         .post("http://127.0.0.1:8183/transcribe")
         .header("Content-Type", "audio/wav")
