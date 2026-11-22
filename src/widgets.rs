@@ -203,15 +203,32 @@ pub fn header_row(
     row.pb_3().mb_3().border_b_1().border_color(t.border)
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum QueueOwner {
+    User,
+    Agent,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct QueueItem {
+    pub text: String,
+    pub owner: QueueOwner,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum QueueAction {
+    Edit(usize),
+    MoveUp(usize),
+    MoveDown(usize),
+    Remove(usize),
+}
+
 /// The task-queue strip, `.task-queue`: a hairline above the composer, an 11px
-/// header ("☰ Task queue" with the count pushed right), then tight surface rows
-/// — warn dot + prompt left, blue "Next"/"Queued" and a bordered × right. The ×
-/// is what the PWA row has too: a queued prompt is the user's, so taking it back
-/// out is never the run's decision.
-pub fn queue_strip<F, R>(t: &Theme, items: &[String], on_view_all: F, on_remove: R) -> Div
+/// header, then two visible rows with the rest available through vertical scroll.
+pub fn queue_strip<F, A>(t: &Theme, items: &[QueueItem], on_view_all: F, on_action: A) -> Div
 where
     F: Fn(&mut Window, &mut App) + 'static,
-    R: Fn(usize, &mut Window, &mut App) + Clone + 'static,
+    A: Fn(QueueAction, &mut Window, &mut App) + Clone + 'static,
 {
     let len = items.len();
     let header = div().flex().items_center().gap_2().pb_1()
@@ -223,24 +240,42 @@ where
             .text_color(t.link)
             .on_click(move |_, window, cx| on_view_all(window, cx)));
 
-    let mut rows = div().flex().flex_col().gap_1().max_h(px(100.0)).overflow_y_scrollbar();
-    for (i, text) in items.iter().enumerate() {
+    let mut rows = div().flex().flex_col().gap_1().max_h(px(58.0)).overflow_y_scrollbar();
+    for (i, item) in items.iter().enumerate() {
         let is_next = i == 0;
-        let cb = on_remove.clone();
+        let agent_owned = item.owner == QueueOwner::Agent;
+        let cb = on_action.clone();
+        let status = if agent_owned {
+            "AI · locked"
+        } else if is_next {
+            "Next"
+        } else {
+            "Queued"
+        };
+        let mut actions = div().flex().items_center().gap_1().flex_shrink_0();
+        if !agent_owned {
+            let edit = cb.clone();
+            let up = cb.clone();
+            let down = cb.clone();
+            let remove = cb.clone();
+            actions = actions
+                .child(Button::new(ElementId::NamedInteger("queue-up".into(), i as u64)).label("↑").ghost().xsmall()
+                    .w(px(20.0)).h(px(22.0)).on_click(move |_, window, cx| edit(QueueAction::MoveUp(i), window, cx)))
+                .child(Button::new(ElementId::NamedInteger("queue-down".into(), i as u64)).label("↓").ghost().xsmall()
+                    .w(px(20.0)).h(px(22.0)).on_click(move |_, window, cx| up(QueueAction::MoveDown(i), window, cx)))
+                .child(Button::new(ElementId::NamedInteger("queue-edit".into(), i as u64)).label("✎").ghost().xsmall()
+                    .w(px(20.0)).h(px(22.0)).on_click(move |_, window, cx| down(QueueAction::Edit(i), window, cx)))
+                .child(Button::new(ElementId::NamedInteger("queue-remove".into(), i as u64)).label("×").ghost().xsmall()
+                    .w(px(20.0)).h(px(22.0)).border_1().border_color(t.border)
+                    .on_click(move |_, window, cx| remove(QueueAction::Remove(i), window, cx)));
+        }
         rows = rows.child(
             div().id(ElementId::NamedInteger("queue-item".into(), i as u64))
-                .flex().items_start().gap_2().px_3().py_1().rounded_md().bg(t.muted)
-                .child(div().w(px(6.0)).h(px(6.0)).mt(px(6.0)).flex_shrink_0().rounded_full().bg(t.yellow))
-                // No character cap and no `.truncate()`: a queued subtask is a whole
-                // instruction the user has to be able to read, and the ones the loop
-                // hands on for a skipped work phase are sentences. `flex_1` gives the
-                // text a zero-width basis, so it wraps inside the row instead of cutting.
-                .child(div().flex_1().child(Label::new(text.clone()).text_size(px(12.0))))
-                .child(Label::new(if is_next { "Next" } else { "Queued" })
-                    .font_family("monospace").text_size(px(10.0)).text_color(t.blue).mt(px(3.0)))
-                .child(Button::new(ElementId::NamedInteger("queue-remove".into(), i as u64))
-                    .label("×").ghost().xsmall().w(px(22.0)).h(px(22.0)).rounded_sm().border_1().border_color(t.border)
-                    .on_click(move |_, window, cx| cb(i, window, cx))),
+                .flex().items_center().gap_2().h(px(27.0)).px_3().rounded_md().bg(t.muted).overflow_hidden()
+                .child(div().w(px(6.0)).h(px(6.0)).flex_shrink_0().rounded_full().bg(if agent_owned { t.blue } else { t.yellow }))
+                .child(div().flex_1().overflow_hidden().child(Label::new(item.text.clone()).text_size(px(12.0)).truncate()))
+                .child(Label::new(status).font_family("monospace").text_size(px(10.0)).text_color(t.blue))
+                .child(actions),
         );
     }
 
