@@ -23,26 +23,53 @@ use gpui_kit::*;
 use crate::markdown::rich_div;
 use crate::timeline::{GroupRow, VISIBLE_ROWS};
 
-/// The 20px shield mark, painted as one stroked polygon. The PWA's brand icon
-/// is the lucide shield outline in `--brand`; gpui has no path element, so the
-/// silhouette is drawn here and both surfaces call this one function, which is
-/// the only way the glyph cannot drift apart. `polygon` adds `bounds.origin` to
-/// every point, so the points below stay relative to the tile.
-pub fn brand_shield(t: &Theme) -> impl IntoElement {
-    let color = t.accent;
+/// The 20px fennec face, painted from a few filled polygons so it stays crisp
+/// at the native shell's small header size and does not depend on a font glyph.
+pub fn brand_fox(t: &Theme) -> impl IntoElement {
+    let fur = t.accent;
+    let shadow = t.background;
     gpui_kit::canvas(
         |bounds, _window, _cx| bounds,
         move |bounds, _state, window, _cx| {
-            let pts = [
-                point(px(10.0), px(0.0)),
-                point(px(20.0), px(4.0)),
-                point(px(20.0), px(11.0)),
+            let face = [
+                point(px(2.0), px(4.0)),
+                point(px(6.0), px(1.0)),
+                point(px(10.0), px(4.0)),
+                point(px(14.0), px(1.0)),
+                point(px(18.0), px(4.0)),
+                point(px(17.0), px(13.0)),
                 point(px(10.0), px(20.0)),
-                point(px(0.0), px(11.0)),
-                point(px(0.0), px(4.0)),
+                point(px(3.0), px(13.0)),
             ];
-            if let Some(path) = gpui_kit::component::plot::polygon(&pts, &bounds) {
-                window.paint_path(path, color);
+            let left_ear = [
+                point(px(4.0), px(5.0)),
+                point(px(6.0), px(3.0)),
+                point(px(8.0), px(6.0)),
+            ];
+            let right_ear = [
+                point(px(12.0), px(6.0)),
+                point(px(14.0), px(3.0)),
+                point(px(16.0), px(5.0)),
+            ];
+            let left_eye = [
+                point(px(5.0), px(10.0)),
+                point(px(8.0), px(9.0)),
+                point(px(8.0), px(11.0)),
+            ];
+            let right_eye = [
+                point(px(12.0), px(9.0)),
+                point(px(15.0), px(10.0)),
+                point(px(12.0), px(11.0)),
+            ];
+            let nose = [
+                point(px(9.0), px(14.0)),
+                point(px(11.0), px(14.0)),
+                point(px(10.0), px(16.0)),
+            ];
+            for points in [&face[..], &left_ear[..], &right_ear[..], &left_eye[..], &right_eye[..], &nose[..]] {
+                if let Some(path) = gpui_kit::component::plot::polygon(points, &bounds) {
+                    window.paint_path(path, if points.len() == 8 { fur } else { shadow });
+                }
             }
         },
     )
