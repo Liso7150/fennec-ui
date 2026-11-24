@@ -4,7 +4,7 @@ Shared [gpui-kit](https://crates.io/crates/gpui-kit) pieces for the Fennec shell
 markdown, timeline grouping, composer controls, the inspector model, and the dialogs both
 native surfaces open.
 
-Working version **1.0.0**; nothing at 1.0.0 is published yet — the newest published product release is `v0.9.0`.
+Working version **1.0.0**. This repository has no prior published release or tag; nothing at 1.0.0 is published yet.
 
 ## Why this crate exists
 
