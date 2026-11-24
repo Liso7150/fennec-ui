@@ -52,7 +52,7 @@ Theme presets: 7 palettes in `theme.rs`, each carrying its own background, muted
 
 ## Tests
 
-The lane measures 43 tests written inline in 13 modules — 27 in `timeline.rs`, 9 in `attention.rs`, 4 in `inspector.rs`, 2 in `controls.rs`, 1 in `icons.rs`. `fennec-desktop` compiles them but never runs them, so the crate needs its own lane.
+The lane measures 44 tests written inline in 13 modules — 28 in `timeline.rs`, 9 in `attention.rs`, 4 in `inspector.rs`, 2 in `controls.rs`, 1 in `icons.rs`. `fennec-desktop` compiles them but never runs them, so the crate needs its own lane.
 
 ```
 cargo test --offline

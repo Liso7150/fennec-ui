@@ -242,8 +242,8 @@ pub fn block_title(rows: &[GroupRow], live: bool, elapsed_secs: u64) -> String {
     for row in rows {
         match row.kind {
             ActionKind::Thought => thoughts += 1,
-            ActionKind::Read => reads += 1,
-            ActionKind::Edit => writes += 1,
+            ActionKind::Read if !row.failed => reads += 1,
+            ActionKind::Edit if !row.failed => writes += 1,
             _ => tools += 1,
         }
     }
@@ -557,6 +557,12 @@ mod tests {
             block_title(&[row(ActionKind::Read), row(ActionKind::Run)], false, 0),
             "Ran 1 tool · read 1 file"
         );
+    }
+
+    #[test]
+    fn failed_file_calls_are_not_counted_as_completed_file_work() {
+        let rows = vec![row(ActionKind::Edit).failed(), row(ActionKind::Read).failed()];
+        assert_eq!(block_title(&rows, false, 0), "Ran 2 tools");
     }
 
     /// While the run is inside the block the clock is the only thing that
