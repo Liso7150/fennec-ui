@@ -41,7 +41,8 @@ pub struct InspectItem {
 }
 
 /// A named group of inspectable entries. `summary` is the line the row shows
-/// while it holds nothing, worded the way the PWA inspector words it.
+/// while it holds nothing, worded the way the PWA inspector words it. `icon`
+/// is a [`crate::icons`] name — the PWA's own line icon for the section.
 #[derive(Clone, Debug)]
 pub struct InspectSection {
     pub id: &'static str,
@@ -158,7 +159,7 @@ pub fn inspect_section(t: &Theme, section: InspectSection) -> impl IntoElement {
         .flex().items_center().gap_3().py_3().border_b_1().border_color(t.border)
         .cursor_pointer().hover(|d| d.bg(hover))
         .child(div().w(px(20.0)).flex_shrink_0().flex().justify_center()
-            .child(Label::new(section.icon).text_size(px(16.0))))
+            .child(crate::icons::ui_icon(section.icon, 16.0, t.accent)))
         .child(div().flex().flex_col().gap_1().flex_1().overflow_hidden()
             .child(Label::new(section.label).text_size(px(13.0))
                 .font_weight(FontWeight::SEMIBOLD).text_color(t.foreground))

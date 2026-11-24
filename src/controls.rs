@@ -19,12 +19,10 @@ pub fn model_display_name(model: &str) -> String {
     }
 }
 
-pub fn access_icon(mode: &str) -> &'static str {
-    match mode {
-        "auto" => "🕐",
-        "full" => "⚠",
-        _ => "🛡",
-    }
+/// The PWA's permission trigger paints a mode-colored bullet (`•`), not a
+/// glyph per mode; the color alone says which mode is on.
+pub fn access_icon(_mode: &str) -> &'static str {
+    "•"
 }
 
 pub fn access_label(mode: &str) -> &'static str {
@@ -53,9 +51,9 @@ where
         .rounded_md().border_1().border_color(t.border).bg(t.background).shadow_lg()
         .p_2().w(px(460.0)).flex().flex_col().gap_1();
     for (mode, icon, title, desc) in [
-        ("ask", "🛡", "Ask every time", "Always ask before commands, external edits, and internet use"),
-        ("auto", "🕐", "Auto approve", "Only asks when a potential risk is detected."),
-        ("full", "⚠", "Full access", "Never ask, with full access to your files, terminal, and the internet"),
+        ("ask", "•", "Ask every time", "Always ask before commands, external edits, and internet use"),
+        ("auto", "•", "Auto approve", "Only asks when a potential risk is detected."),
+        ("full", "•", "Full access", "Never ask, with full access to your files, terminal, and the internet"),
     ] {
         let selected = current == mode;
         let danger = mode == "full";
@@ -65,7 +63,7 @@ where
             Button::new(format!("perm-opt-{mode}")).ghost().w_full().justify_start()
                 .on_click(move |_, window, cx| cb(mode_owned.clone(), window, cx))
                 .child(div().flex().items_start().gap_3().px_3().py_3().w_full()
-                    .child(Label::new(icon).text_size(px(18.0)).mt(px(2.0)))
+                    .child(Label::new(icon).text_size(px(18.0)).mt(px(2.0)).text_color(access_color(mode, t)))
                     .child(div().flex().flex_col().flex_1().gap_0p5()
                         .child(Label::new(title).text_size(px(13.0)).font_weight(FontWeight::MEDIUM)
                             .text_color(if danger { t.red } else { t.foreground }))
@@ -87,10 +85,13 @@ pub const REASONING_LEVELS: [(&str, &str); 4] = [
 ];
 
 /// The model-selector dropdown with a "Download new model…" row and the
-/// reasoning-effort rows the same dropdown carries.
+/// reasoning-effort rows the same dropdown carries. `served` is the checkpoint
+/// the engine proved it holds: it leads the list so a model nobody is running
+/// cannot be the only one checked.
 pub fn model_dropdown<F, G, H>(
     t: &Theme,
     current: &str,
+    served: Option<&str>,
     on_select: F,
     on_download: G,
     effort: &str,
@@ -104,10 +105,19 @@ where
     let mut d = div().absolute().bottom(px(70.0)).right(px(20.0))
         .rounded_md().border_1().border_color(t.border).bg(t.background).shadow_lg()
         .p_2().w(px(220.0)).flex().flex_col().gap_1();
+    let mut rows: Vec<(String, String)> = Vec::new();
+    if let Some(id) = served {
+        rows.push((id.to_string(), model_display_name(id)));
+    }
     for (id, name) in [("qwen3_5_moe", "Qwen3.5-MoE"), ("edge0_145b", "Edge0-145B"), ("qwen36_35b", "Qwen36-35B")] {
+        if !rows.iter().any(|(row, _)| row == id) {
+            rows.push((id.to_string(), name.to_string()));
+        }
+    }
+    for (id, name) in rows {
         let selected = current == id;
         let cb = on_select.clone();
-        let id_owned = id.to_string();
+        let id_owned = id.clone();
         d = d.child(
             Button::new(format!("model-{id}")).ghost().small().w_full().justify_start()
                 .child(div().flex().items_center().gap_3().px_3().py_2()
@@ -192,14 +202,27 @@ fn transcript(body: &str) -> Option<String> {
         .get("text")?.as_str().map(|t| t.to_string())
 }
 
+/// The sentence inside a refusal body.
+///
+/// Both servers answer a bad clip with `{"error": "..."}` — the agent's route
+/// and core's both — so the toast says "audio must be at most 16 MiB" instead of
+/// a line of JSON the user has to parse.
+fn refusal(body: &str) -> String {
+    serde_json::from_str::<serde_json::Value>(body).ok()
+        .and_then(|v| v.get("error").or_else(|| v.get("detail")).and_then(|e| e.as_str()).map(str::to_string))
+        .unwrap_or_else(|| body.trim().to_string())
+}
+
 /// Turn the recorded samples into text.
 ///
-/// The clip goes to core's `POST /api/stt`, because that route is what starts
-/// the faster-whisper sidecar on demand (`engine.py:ensure_stt`). The direct
+/// The clip goes to `POST /api/stt`, which is the route that starts the
+/// faster-whisper sidecar on demand — the Rust agent owns it now
+/// (`fennec_client::Speech`), and core serves the same contract. The direct
 /// `SIDECAR` calls after it are only for a sidecar someone launched by hand.
-/// Going to the sidecar first and never to core is what made dictation dead on
-/// arrival: nothing owns the port, every request is refused, and the caller got
-/// back an empty string it could not tell apart from a silent microphone.
+/// Going to the sidecar first and never to the server is what made dictation
+/// dead on arrival: nothing owns the port, every request is refused, and the
+/// caller got back an empty string it could not tell apart from a silent
+/// microphone.
 ///
 /// `Ok` holds the transcript and is empty when the clip carried no speech;
 /// `Err` is what each lane said, which is the difference between "you said
@@ -230,10 +253,12 @@ pub fn transcribe_samples(samples: &[f32], rate: u32, core_base: &str) -> Result
                         Some(text) => return Ok(text),
                         None => return Err(format!("{url} replied without a text field: {body}")),
                     },
-                    Ok(_) if status.as_u16() == 404 => {
-                        failures.push(format!("{url}: this service has no /api/stt, update fennec-core"));
+                    // 405, not 404, is what an agent without the route answers:
+                    // the static-asset fallback only takes GET and HEAD.
+                    Ok(_) if matches!(status.as_u16(), 404 | 405) => {
+                        failures.push(format!("{url}: this service has no /api/stt, update the server"));
                     }
-                    Ok(body) => failures.push(format!("{url}: http {status}: {}", body.trim())),
+                    Ok(body) => failures.push(format!("{url}: http {status}: {}", refusal(&body))),
                     Err(e) => failures.push(format!("{url}: unreadable reply: {e}")),
                 }
             }
@@ -255,7 +280,7 @@ pub fn transcribe_samples(samples: &[f32], rate: u32, core_base: &str) -> Result
                     Some(text) => return Ok(text),
                     None => failures.push(format!("{SIDECAR}: replied without a text field")),
                 },
-                Ok(body) => failures.push(format!("{SIDECAR}: http {status}: {}", body.trim())),
+                Ok(body) => failures.push(format!("{SIDECAR}: http {status}: {}", refusal(&body))),
                 Err(e) => failures.push(format!("{SIDECAR}: unreadable reply: {e}")),
             }
         }
@@ -278,7 +303,7 @@ pub fn transcribe_samples(samples: &[f32], rate: u32, core_base: &str) -> Result
                             return Ok(text);
                         }
                     }
-                    Ok(body) => failures.push(format!("{url}: http {status}: {}", body.trim())),
+                    Ok(body) => failures.push(format!("{url}: http {status}: {}", refusal(&body))),
                     Err(e) => failures.push(format!("{url}: unreadable reply: {e}")),
                 }
             }
@@ -286,4 +311,21 @@ pub fn transcribe_samples(samples: &[f32], rate: u32, core_base: &str) -> Result
         }
     }
     Err(failures.join(" · "))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::refusal;
+
+    #[test]
+    fn a_refusal_shows_the_sentence_not_the_json() {
+        assert_eq!(refusal(r#"{"ok":false,"error":"audio must be at most 16 MiB"}"#), "audio must be at most 16 MiB");
+        assert_eq!(refusal(r#"{"detail":"file too large"}"#), "file too large");
+    }
+
+    #[test]
+    fn a_plain_body_is_passed_through_as_written() {
+        assert_eq!(refusal("  Gateway Error 502\n"), "Gateway Error 502");
+        assert_eq!(refusal("{\"text\":\"not a refusal\"}"), r#"{"text":"not a refusal"}"#);
+    }
 }

@@ -112,7 +112,10 @@ where
                                     .children(folders.iter().enumerate().map(|(i, f)| {
                                         let t = t.clone();
                                         let source_folders = source_folders.clone();
-                                        div().p_2().rounded_sm().bg(t.muted).flex().items_center().gap_2()
+                                        // The row id keeps each folder's label on its own a11y
+                                        // path; one `Label::new` in a loop shares an id otherwise.
+                                        div().id(ElementId::NamedInteger("ws-folder".into(), i as u64))
+                                            .p_2().rounded_sm().bg(t.muted).flex().items_center().gap_2()
                                             .child(Label::new(f.as_str()).text_size(px(11.0)).font_family("monospace")
                                                 .flex_1().truncate())
                                             .child(Button::new(format!("rm-folder-{i}")).ghost().xsmall()

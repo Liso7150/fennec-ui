@@ -1,6 +1,6 @@
 //! Shared message widgets for the dense workflow layout the Fennec desktop
-//! shell renders: the user's accent-tinted card, a `<time> [🔊]` AI header with
-//! no identity chip, bordered action/attachment/edit cards, and the tight
+//! shell renders: the user's accent-tinted card, a `<time> [speak]` AI header
+//! with no identity chip, bordered action/attachment/edit cards, and the tight
 //! scrollable queue strip.
 //!
 //! Click handlers are app-generic: they receive `(&mut Window, &mut App)` so
@@ -23,59 +23,41 @@ use gpui_kit::*;
 use crate::markdown::rich_div;
 use crate::timeline::{GroupRow, VISIBLE_ROWS};
 
-/// The 20px fennec face, painted from a few filled polygons so it stays crisp
-/// at the native shell's small header size and does not depend on a font glyph.
-pub fn brand_fox(t: &Theme) -> impl IntoElement {
+/// The coding-agent's fox, drawn natively.
+///
+/// The two `d` attributes below are `web/icons/icon.svg` in that repo verbatim,
+/// in its 512x512 viewBox, so the mark in the shell is the same drawing as the
+/// operating-system icon next to the window title rather than a second version
+/// of it. Fur takes the theme accent and the punched-out ears, cheeks and nose
+/// take the preset background, so the mark follows the theme like every other
+/// colour in the shell.
+///
+/// gpui rasterises an SVG into a one-colour alpha mask, so the two tones need
+/// two stacked layers. `icon.svg`'s own rounded background plate is dropped;
+/// this widget draws the tile, and the fox keeps the file's padding inside it.
+///
+/// `size` is the tile edge, so a caller sets how tall the brand stands.
+pub fn brand_fox(t: &Theme, size: f32) -> impl IntoElement {
+    const FUR: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><path d="M96 126 204 64l52 74 52-74 108 62-24 220-136 110L120 346 96 126Z"/></svg>"#;
+    // The ears, cheeks and nose, joined from the file's three cutout paths into
+    // one. Each subpath is rewritten with an absolute `M` and an explicit `l`,
+    // because the file spells the offsets lowercase: `m256 0` after a `Z` is
+    // relative to the previous subpath's start, which differs per path element.
+    const CUTS: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><path d="M128 148l76-44 38 62-70 46-44-64ZM384 148l-76-44-38 62 70 46 44-64ZM126 238l102-26 28 54-76 28-54-56ZM386 238l-102-26-28 54 76 28 54-56ZM224 350l32-24 32 24-32 34-32-34Z"/></svg>"#;
+
     let fur = t.accent;
-    let shadow = t.background;
-    gpui_kit::canvas(
-        |bounds, _window, _cx| bounds,
-        move |bounds, _state, window, _cx| {
-            let face = [
-                point(px(2.0), px(4.0)),
-                point(px(6.0), px(1.0)),
-                point(px(10.0), px(4.0)),
-                point(px(14.0), px(1.0)),
-                point(px(18.0), px(4.0)),
-                point(px(17.0), px(13.0)),
-                point(px(10.0), px(20.0)),
-                point(px(3.0), px(13.0)),
-            ];
-            let left_ear = [
-                point(px(4.0), px(5.0)),
-                point(px(6.0), px(3.0)),
-                point(px(8.0), px(6.0)),
-            ];
-            let right_ear = [
-                point(px(12.0), px(6.0)),
-                point(px(14.0), px(3.0)),
-                point(px(16.0), px(5.0)),
-            ];
-            let left_eye = [
-                point(px(5.0), px(10.0)),
-                point(px(8.0), px(9.0)),
-                point(px(8.0), px(11.0)),
-            ];
-            let right_eye = [
-                point(px(12.0), px(9.0)),
-                point(px(15.0), px(10.0)),
-                point(px(12.0), px(11.0)),
-            ];
-            let nose = [
-                point(px(9.0), px(14.0)),
-                point(px(11.0), px(14.0)),
-                point(px(10.0), px(16.0)),
-            ];
-            for points in [&face[..], &left_ear[..], &right_ear[..], &left_eye[..], &right_eye[..], &nose[..]] {
-                if let Some(path) = gpui_kit::component::plot::polygon(points, &bounds) {
-                    window.paint_path(path, if points.len() == 8 { fur } else { shadow });
-                }
-            }
-        },
-    )
-    .w(px(20.0))
-    .h(px(20.0))
-    .flex_shrink_0()
+    let ground = t.background;
+    let fox = size * 0.75;
+    div().w(px(size)).h(px(size)).flex_shrink_0().flex().items_center().justify_center()
+        .rounded(px(size * 10.0 / 32.0)).bg(fur.opacity(0.12))
+        .child(
+            div()
+                .relative()
+                .w(px(fox))
+                .h(px(fox))
+                .child(svg().data(FUR).text_color(fur).absolute().inset_0().w(px(fox)).h(px(fox)))
+                .child(svg().data(CUTS).text_color(ground).absolute().inset_0().w(px(fox)).h(px(fox))),
+        )
 }
 
 /// First line of `s`, trimmed and bounded to `n` chars with an ellipsis.
@@ -141,9 +123,9 @@ pub fn user_card(t: &Theme, time: &str, text: &str, msg_idx: usize) -> Stateful<
 }
 
 /// The line that closes a message with no header to carry one: the time and,
-/// where the card speaks, the 🔊 button — both read down the left edge, with no
-/// rule above them and nothing pushed to the right. `msg_id` keeps the button's
-/// element id unique across messages.
+/// where the card speaks, the volume-icon button — both read down the left
+/// edge, with no rule above them and nothing pushed to the right. `msg_id`
+/// keeps the button's element id unique across messages.
 pub fn msg_footer(
     t: &Theme,
     msg_id: u64,
@@ -158,7 +140,7 @@ pub fn msg_footer(
         row = row.child(
             Button::new(ElementId::NamedInteger("tts".into(), msg_id)).ghost().xsmall().px_2().py_1()
                 .rounded_md().border_1().border_color(t.border)
-                .child(Label::new("🔊").text_size(px(12.0)).text_color(t.muted_foreground))
+                .child(crate::icons::ui_icon("volume", 12.0, t.muted_foreground))
                 .on_click(move |_, window, cx| on_speak(window, cx)),
         );
     }
@@ -196,7 +178,7 @@ pub fn header_row(
         row = row.child(
             Button::new(ElementId::NamedInteger("tts".into(), msg_id)).ghost().xsmall().px_2().py_1()
                 .rounded_md().border_1().border_color(t.border)
-                .child(Label::new("🔊").text_size(px(12.0)).text_color(t.muted_foreground))
+                .child(crate::icons::ui_icon("volume", 12.0, t.muted_foreground))
                 .on_click(move |_, window, cx| on_speak(window, cx)),
         );
     }
@@ -232,7 +214,7 @@ where
 {
     let len = items.len();
     let header = div().flex().items_center().gap_2().pb_1()
-        .child(Label::new("☰").text_size(px(12.0)).text_color(t.muted_foreground))
+        .child(crate::icons::ui_icon("queue", 14.0, t.muted_foreground))
         .child(Label::new("Task queue").font_weight(FontWeight::SEMIBOLD).text_size(px(11.0)))
         .child(Label::new(format!("{len} item{}", if len == 1 { "" } else { "s" }))
             .text_size(px(11.0)).text_color(t.muted_foreground))
@@ -601,9 +583,10 @@ where
     for (i, (name, is_image)) in items.iter().enumerate() {
         let cb = on_remove.clone();
         row = row.child(
-            div().flex().items_center().gap_2().px_2().py_1().rounded_lg().max_w(px(260.0))
+            div().id(ElementId::NamedInteger("att-chip".into(), i as u64))
+                .flex().items_center().gap_2().px_2().py_1().rounded_lg().max_w(px(260.0))
                 .bg(t.muted).border_1().border_color(t.border)
-                .child(Label::new(if *is_image { "🖼" } else { "📄" }).text_size(px(12.0)))
+                .child(crate::icons::ui_icon(if *is_image { "image" } else { "file" }, 13.0, t.muted_foreground))
                 .child(Label::new(truncate(name, 40)).text_size(px(11.0)).text_color(t.foreground))
                 .child(Button::new(ElementId::NamedInteger("att-remove".into(), i as u64))
                     .label("×").ghost().xsmall().w(px(18.0)).h(px(18.0)).rounded_full()
@@ -658,7 +641,7 @@ where
             .when(enabled(plugins, "attach"), |d| d.child(
                 Button::new("composer-attach").ghost()
                     .w(px(32.0)).h(px(32.0)).rounded_md().justify_center()
-                    .child(Label::new("📎").text_size(px(14.0)))
+                    .child(crate::icons::ui_icon("paperclip", 17.0, t.muted_foreground))
                     .on_click(move |_, window, cx| on_attach(window, cx))))
             .child(trigger("permission-trigger",
                 div().flex().items_center().gap_2().overflow_hidden()
@@ -666,15 +649,20 @@ where
                     .child(Label::new(perm_label.to_string()).text_size(px(12.0)).font_weight(FontWeight::MEDIUM).text_color(perm_color)),
                 Box::new(move |window, cx| on_perm(window, cx)))))
         .child(div().flex().items_center().gap_2().flex_shrink_0()
+            // The PWA's model trigger is the name and the arrow alone — no
+            // icon in front of it.
             .child(trigger("model-trigger",
                 div().flex().items_center().gap_2().overflow_hidden()
-                    .child(Label::new("⚡").text_size(px(13.0)).text_color(t.yellow))
                     .child(Label::new(model_name.to_string()).text_size(px(12.0)).font_weight(FontWeight::MEDIUM)),
                 Box::new(move |window, cx| on_model(window, cx))))
             .when(enabled(plugins, "stt"), |d| d.child(
                 Button::new("composer-mic").ghost()
                     .w(px(32.0)).h(px(32.0)).rounded_md().justify_center()
-                    .child(Label::new(if stt_recording { "⏹" } else { "🎤" }).text_size(px(14.0)))
+                    .child(crate::icons::ui_icon(
+                        if stt_recording { "stop" } else { "mic" },
+                        17.0,
+                        if stt_recording { t.red } else { t.muted_foreground },
+                    ))
                     .on_click(move |_, window, cx| on_mic(window, cx))))
             .child(Button::new("send").w(px(36.0)).h(px(36.0)).rounded_full().justify_center()
                 .bg(t.accent)
